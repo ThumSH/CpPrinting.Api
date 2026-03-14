@@ -1,0 +1,190 @@
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using CpPrinting.Api.Data;
+using CpPrinting.Api.DTOs;
+using CpPrinting.Api.Models;
+
+namespace CpPrinting.Api.Controllers
+{
+    [ApiController]
+    [Route("api/[controller]")]
+    [Authorize(Roles = "Admin")]
+    public class UsersController : ControllerBase
+    {
+        private readonly AppDbContext _context;
+
+        private static readonly string[] AllowedRoles =
+        {
+            "Admin", "Developer", "QC", "Gatepass", "Audit", "Stores"
+        };
+
+        public UsersController(AppDbContext context)
+        {
+            _context = context;
+        }
+
+        [HttpGet]
+        public async Task<ActionResult<IEnumerable<UserResponseDto>>> GetUsers()
+        {
+            var users = await _context.Users
+                .OrderBy(u => u.Name)
+                .Select(u => new UserResponseDto
+                {
+                    Id = u.Id,
+                    Username = u.Username,
+                    Name = u.Name,
+                    Role = u.Role
+                })
+                .ToListAsync();
+
+            return Ok(users);
+        }
+
+        [HttpGet("{id}")]
+        public async Task<ActionResult<UserResponseDto>> GetUser(string id)
+        {
+            var user = await _context.Users.FindAsync(id);
+
+            if (user == null)
+                return NotFound("User not found.");
+
+            return Ok(new UserResponseDto
+            {
+                Id = user.Id,
+                Username = user.Username,
+                Name = user.Name,
+                Role = user.Role
+            });
+        }
+
+        [HttpPost]
+        public async Task<ActionResult<UserResponseDto>> CreateUser(CreateUserDto dto)
+        {
+            if (string.IsNullOrWhiteSpace(dto.Username))
+                return BadRequest("Username is required.");
+
+            if (string.IsNullOrWhiteSpace(dto.Password))
+                return BadRequest("Password is required.");
+
+            if (string.IsNullOrWhiteSpace(dto.Name))
+                return BadRequest("Name is required.");
+
+            if (string.IsNullOrWhiteSpace(dto.Role))
+                return BadRequest("Role is required.");
+
+            if (!AllowedRoles.Contains(dto.Role))
+                return BadRequest("Invalid role.");
+
+            var usernameExists = await _context.Users.AnyAsync(u => u.Username == dto.Username);
+            if (usernameExists)
+                return BadRequest("Username already exists.");
+
+            var user = new User
+            {
+                Id = Guid.NewGuid().ToString(),
+                Username = dto.Username.Trim(),
+                PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password),
+                Name = dto.Name.Trim(),
+                Role = dto.Role
+            };
+
+            _context.Users.Add(user);
+            await _context.SaveChangesAsync();
+
+            var response = new UserResponseDto
+            {
+                Id = user.Id,
+                Username = user.Username,
+                Name = user.Name,
+                Role = user.Role
+            };
+
+            return CreatedAtAction(nameof(GetUser), new { id = user.Id }, response);
+        }
+
+        [HttpPut("{id}")]
+        public async Task<ActionResult<UserResponseDto>> UpdateUser(string id, UpdateUserDto dto)
+        {
+            if (string.IsNullOrWhiteSpace(dto.Username))
+                return BadRequest("Username is required.");
+
+            if (string.IsNullOrWhiteSpace(dto.Name))
+                return BadRequest("Name is required.");
+
+            if (string.IsNullOrWhiteSpace(dto.Role))
+                return BadRequest("Role is required.");
+
+            if (!AllowedRoles.Contains(dto.Role))
+                return BadRequest("Invalid role.");
+
+            var user = await _context.Users.FindAsync(id);
+
+            if (user == null)
+                return NotFound("User not found.");
+
+            var usernameTaken = await _context.Users.AnyAsync(u => u.Username == dto.Username && u.Id != id);
+            if (usernameTaken)
+                return BadRequest("Username already exists.");
+
+            var currentUsername = User.Identity?.Name;
+
+            if (user.Username == currentUsername && dto.Role != "Admin")
+            {
+                return BadRequest("You cannot remove your own Admin role.");
+            }
+
+            user.Username = dto.Username.Trim();
+            user.Name = dto.Name.Trim();
+            user.Role = dto.Role;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new UserResponseDto
+            {
+                Id = user.Id,
+                Username = user.Username,
+                Name = user.Name,
+                Role = user.Role
+            });
+        }
+
+        [HttpPatch("{id}/password")]
+        public async Task<ActionResult> ResetPassword(string id, ResetPasswordDto dto)
+        {
+            if (string.IsNullOrWhiteSpace(dto.NewPassword))
+                return BadRequest("New password is required.");
+
+            var user = await _context.Users.FindAsync(id);
+
+            if (user == null)
+                return NotFound("User not found.");
+
+            user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.NewPassword);
+            await _context.SaveChangesAsync();
+
+            return Ok(new { message = "Password reset successfully." });
+        }
+
+        [HttpDelete("{id}")]
+        public async Task<ActionResult> DeleteUser(string id)
+        {
+            var user = await _context.Users.FindAsync(id);
+
+            if (user == null)
+                return NotFound("User not found.");
+
+            var currentUsername = User.Identity?.Name;
+
+            if (user.Username == currentUsername)
+            {
+                return BadRequest("You cannot delete your own account.");
+            }
+
+            _context.Users.Remove(user);
+            await _context.SaveChangesAsync();
+
+            return Ok(new { message = "User deleted successfully." });
+        }
+    }
+}
