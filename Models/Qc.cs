@@ -1,5 +1,4 @@
 using System.ComponentModel.DataAnnotations;
-using System.ComponentModel.DataAnnotations.Schema;
 
 namespace CpPrinting.Api.Models
 {
@@ -17,24 +16,32 @@ namespace CpPrinting.Api.Models
     {
         [Key]
         public string Id { get; set; } = string.Empty;
+
+        public string StoreInRecordId { get; set; } = string.Empty;
+        public string SubmissionId { get; set; } = string.Empty;
+        public int RevisionNo { get; set; } = 1;
+
         public string Date { get; set; } = string.Empty;
         public string Customer { get; set; } = string.Empty;
         public string StyleNo { get; set; } = string.Empty;
         public string ScheduleNo { get; set; } = string.Empty;
         public string BodyColour { get; set; } = string.Empty;
         public string PrintColour { get; set; } = string.Empty;
+
         public int ReceivedQty { get; set; }
         public int CpiQty { get; set; }
 
-        // The dynamic grid data
         public Dictionary<string, CPIRowData> InspectionRows { get; set; } = new();
 
-        // Summary Fields
         public int CuttingQty { get; set; }
         public int CheckedQty { get; set; }
         public int RejDamageQty { get; set; }
         public string RejectionPercentage { get; set; } = string.Empty;
         public int BalanceQty { get; set; }
+
+        // Final QC gate for Production
+        public string InspectionStatus { get; set; } = "Pending"; // Pending, Passed, Failed
+
         public string AppRej { get; set; } = string.Empty;
         public string CheckedBy { get; set; } = string.Empty;
         public string SummaryDate { get; set; } = string.Empty;

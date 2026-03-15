@@ -3,6 +3,7 @@ using CpPrinting.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CpPrinting.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260315080527_EnforceQcPassedBeforeProduction")]
+    partial class EnforceQcPassedBeforeProduction
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -42,14 +45,7 @@ namespace CpPrinting.Api.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<int>("BalanceQty")
-                        .HasColumnType("int");
-
                     b.Property<string>("Component")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("CustomerName")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
@@ -61,23 +57,13 @@ namespace CpPrinting.Api.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<int>("DispatchQty")
-                        .HasColumnType("int");
-
                     b.Property<string>("PrepByName")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("ProductionRecordId")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("ReceivedByName")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
-
-                    b.Property<int>("RevisionNo")
-                        .HasColumnType("int");
 
                     b.Property<string>("Rows")
                         .IsRequired()
@@ -87,15 +73,7 @@ namespace CpPrinting.Api.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<string>("StoreInRecordId")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
                     b.Property<string>("StyleNo")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("SubmissionId")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
@@ -158,26 +136,10 @@ namespace CpPrinting.Api.Migrations
                     b.Property<string>("Id")
                         .HasColumnType("nvarchar(450)");
 
-                    b.Property<string>("AdNo")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("AdviceNoteId")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
                     b.Property<int>("AuditQty")
                         .HasColumnType("int");
 
-                    b.Property<string>("AuditorName")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
                     b.Property<string>("Colour")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("CustomerName")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
@@ -189,24 +151,9 @@ namespace CpPrinting.Api.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<string>("DeliveryStatus")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("DeliveryTrackerReportId")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("ProductionRecordId")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
                     b.Property<string>("Remarks")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
-
-                    b.Property<int>("RevisionNo")
-                        .HasColumnType("int");
 
                     b.Property<string>("ScheduleNo")
                         .IsRequired()
@@ -220,15 +167,7 @@ namespace CpPrinting.Api.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<string>("StoreInRecordId")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
                     b.Property<string>("StyleNo")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("SubmissionId")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
@@ -332,29 +271,7 @@ namespace CpPrinting.Api.Migrations
                     b.Property<string>("Id")
                         .HasColumnType("nvarchar(450)");
 
-                    b.Property<string>("AdNo")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("AdviceNoteId")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<int>("BalanceQty")
-                        .HasColumnType("int");
-
                     b.Property<string>("CreatedAt")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("CustomerName")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<int>("DeliveryQty")
-                        .HasColumnType("int");
-
-                    b.Property<string>("DeliveryStatus")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
@@ -365,26 +282,11 @@ namespace CpPrinting.Api.Migrations
                     b.Property<int>("OrderQty")
                         .HasColumnType("int");
 
-                    b.Property<string>("ProductionRecordId")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<int>("RevisionNo")
-                        .HasColumnType("int");
-
                     b.Property<string>("Rows")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<string>("StoreInRecordId")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
                     b.Property<string>("StyleNo")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("SubmissionId")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 

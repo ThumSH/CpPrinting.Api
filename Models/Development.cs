@@ -25,14 +25,23 @@ namespace CpPrinting.Api.Models
         public List<string> Placements { get; set; } = new();
     }
 
-    public class SubmissionForm
-    {
-        [Key]
-        public string Id { get; set; } = string.Empty;
-        public string StyleNo { get; set; } = string.Empty;
-        public string CustomerName { get; set; } = string.Empty;
-        public string SubmissionDate { get; set; } = string.Empty;
-        public string Level { get; set; } = string.Empty;
-        public string Comment { get; set; } = string.Empty;
-    }
+   public class SubmissionForm
+{
+    [Key]
+    public string Id { get; set; } = string.Empty;
+
+    public string StyleNo { get; set; } = string.Empty;
+
+    public string CustomerName { get; set; } = string.Empty;
+
+    public string SubmissionDate { get; set; } = string.Empty;
+
+    public string Level { get; set; } = string.Empty;
+
+    public string Comment { get; set; } = string.Empty;
+
+    public int RevisionNo { get; set; } = 1;
+
+    public bool IsLatestRevision { get; set; } = true;
+}
 }
