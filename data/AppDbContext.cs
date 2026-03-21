@@ -12,32 +12,53 @@ namespace CpPrinting.Api.Data
         public DbSet<DevelopmentJob> DevelopmentJobs { get; set; }
         public DbSet<SubmissionForm> Submissions { get; set; }
         public DbSet<ApprovalRecord> Approvals { get; set; }
+
         public DbSet<StoreInRecord> StoreInRecords { get; set; }
+        public DbSet<CutRecord> CutRecords { get; set; }
+        public DbSet<BundleRecord> BundleRecords { get; set; }
         public DbSet<StoreProductionRecord> StoreProductionRecords { get; set; }
+
         public DbSet<CPIReport> CpiReports { get; set; }
         public DbSet<AuditRecord> AuditRecords { get; set; }
         public DbSet<DeliveryTrackerReport> DeliveryTrackers { get; set; }
-        
-        // NEW: Gatepass Table
         public DbSet<AdviceNoteRecord> AdviceNotes { get; set; }
+        public DbSet<DailyOutputRecord> DailyOutputRecords { get; set; }
+        public DbSet<DowntimeRecord> DowntimeRecords { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
 
-            // 1. QC Grid JSON mapping
+            // INVENTORY: StoreIn -> Cuts -> Bundles
+            modelBuilder.Entity<StoreInRecord>()
+                .HasMany(s => s.Cuts)
+                .WithOne(c => c.StoreInRecord)
+                .HasForeignKey(c => c.StoreInRecordId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<CutRecord>()
+                .HasMany(c => c.Bundles)
+                .WithOne(b => b.CutRecord)
+                .HasForeignKey(b => b.CutRecordId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // QC: CutInspections JSON
             modelBuilder.Entity<CPIReport>()
-                .Property(e => e.InspectionRows)
+                .Property(e => e.CutInspections)
                 .HasConversion(
                     v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
-                    v => JsonSerializer.Deserialize<Dictionary<string, CPIRowData>>(v, (JsonSerializerOptions?)null)!
+                    v => JsonSerializer.Deserialize<List<CpiCutInspection>>(v, (JsonSerializerOptions?)null)!
                 );
 
-            // 2. Audit Bundles JSON mapping
+            // AUDIT: Bundles JSON
             modelBuilder.Entity<AuditRecord>()
-                .OwnsMany(a => a.Bundles, builder => { builder.ToJson(); });
+                .Property(e => e.Bundles)
+                .HasConversion(
+                    v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+                    v => JsonSerializer.Deserialize<List<AuditBundleSelection>>(v, (JsonSerializerOptions?)null)!
+                );
 
-            // 3. NEW: Gatepass Rows JSON mapping
+            // GATEPASS: Advice Note Rows JSON
             modelBuilder.Entity<AdviceNoteRecord>()
                 .Property(e => e.Rows)
                 .HasConversion(
@@ -45,12 +66,29 @@ namespace CpPrinting.Api.Data
                     v => JsonSerializer.Deserialize<Dictionary<string, AdviceNoteRow>>(v, (JsonSerializerOptions?)null)!
                 );
 
-                modelBuilder.Entity<DeliveryTrackerReport>()
-                    .Property(e => e.Rows)
-                    .HasConversion(
-                        v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
-                        v => JsonSerializer.Deserialize<List<DeliveryTrackerRow>>(v, (JsonSerializerOptions?)null)!
-                    );
-                }
+            // DELIVERY TRACKER: Rows JSON
+            modelBuilder.Entity<DeliveryTrackerReport>()
+                .Property(e => e.Rows)
+                .HasConversion(
+                    v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+                    v => JsonSerializer.Deserialize<List<DeliveryTrackerRow>>(v, (JsonSerializerOptions?)null)!
+                );
+
+            // WORKER: TimeSlots JSON
+            modelBuilder.Entity<DailyOutputRecord>()
+                .Property(e => e.TimeSlots)
+                .HasConversion(
+                    v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+                    v => JsonSerializer.Deserialize<List<TimeSlotEntry>>(v, (JsonSerializerOptions?)null)!
+                );
+
+            // DOWNTIME: Entries JSON
+            modelBuilder.Entity<DowntimeRecord>()
+                .Property(e => e.Entries)
+                .HasConversion(
+                    v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+                    v => JsonSerializer.Deserialize<List<DowntimeEntry>>(v, (JsonSerializerOptions?)null)!
+                );
+        }
     }
 }

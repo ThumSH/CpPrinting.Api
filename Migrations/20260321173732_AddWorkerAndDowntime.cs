@@ -5,25 +5,25 @@
 namespace CpPrinting.Api.Migrations
 {
     /// <inheritdoc />
-    public partial class AddApprovalRevisionNo : Migration
+    public partial class AddWorkerAndDowntime : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.AddColumn<int>(
-                name: "RevisionNo",
-                table: "Approvals",
-                type: "int",
+            migrationBuilder.AddColumn<string>(
+                name: "TableNo",
+                table: "DowntimeRecords",
+                type: "nvarchar(max)",
                 nullable: false,
-                defaultValue: 0);
+                defaultValue: "");
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropColumn(
-                name: "RevisionNo",
-                table: "Approvals");
+                name: "TableNo",
+                table: "DowntimeRecords");
         }
     }
 }

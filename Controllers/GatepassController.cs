@@ -21,43 +21,86 @@ namespace CpPrinting.Api.Controllers
 
         // ==========================================
         // ELIGIBLE ITEMS FOR GATEPASS
+        // Source: Production records (which come from QC-passed Store-In)
+        // Enriched with Store-In data for full context
         // ==========================================
 
         [HttpGet("eligible-dispatch")]
         public async Task<ActionResult<IEnumerable<EligibleGatepassDto>>> GetEligibleDispatchItems()
         {
             var notes = await _context.AdviceNotes.ToListAsync();
+
             var productionRecords = await _context.StoreProductionRecords
                 .OrderByDescending(p => p.IssueDate)
                 .ToListAsync();
 
-            var eligible = productionRecords
-                .Select(p =>
-                {
-                    var totalAlreadyDispatched = notes
-                        .Where(n => n.ProductionRecordId == p.Id)
-                        .Sum(n => n.DispatchQty);
-
-                    var remainingDispatchQty = Math.Max(0, p.IssueQty - totalAlreadyDispatched);
-
-                    return new EligibleGatepassDto
-                    {
-                        ProductionRecordId = p.Id,
-                        StoreInRecordId = p.StoreInRecordId,
-                        SubmissionId = p.SubmissionId,
-                        RevisionNo = p.RevisionNo,
-                        StyleNo = p.StyleNo,
-                        CustomerName = p.CustomerName,
-                        Components = p.Components,
-                        CutNo = p.CutNo,
-                        IssueDate = p.IssueDate,
-                        LineNo = p.LineNo,
-                        IssueQty = p.IssueQty,
-                        RemainingDispatchQty = remainingDispatchQty
-                    };
-                })
-                .Where(x => x.RemainingDispatchQty > 0)
+            // Load store-in records WITH cuts and bundles
+            var storeInIds = productionRecords
+                .Select(p => p.StoreInRecordId)
+                .Distinct()
                 .ToList();
+
+            var storeInRecords = await _context.StoreInRecords
+                .Include(s => s.Cuts)
+                    .ThenInclude(c => c.Bundles)
+                .Where(s => storeInIds.Contains(s.Id))
+                .ToListAsync();
+
+            // Group by store-in record — one eligible item per style/schedule
+            var eligible = storeInRecords.Select(storeIn =>
+            {
+                var productionsForThisStoreIn = productionRecords
+                    .Where(p => p.StoreInRecordId == storeIn.Id)
+                    .ToList();
+
+                if (!productionsForThisStoreIn.Any()) return null;
+
+                var totalIssued = productionsForThisStoreIn.Sum(p => p.IssueQty);
+                var totalAlreadyDispatched = notes
+                    .Where(n => productionsForThisStoreIn.Select(p => p.Id).Contains(n.ProductionRecordId))
+                    .Sum(n => n.DispatchQty);
+
+                var remainingDispatchQty = Math.Max(0, totalIssued - totalAlreadyDispatched);
+
+                var firstProd = productionsForThisStoreIn.First();
+
+                // Collect all production record IDs for this store-in
+                var productionRecordIds = productionsForThisStoreIn.Select(p => p.Id).ToList();
+
+                return new EligibleGatepassDto
+                {
+                    ProductionRecordId = string.Join(",", productionRecordIds),
+                    StoreInRecordId = storeIn.Id,
+                    SubmissionId = storeIn.SubmissionId,
+                    RevisionNo = storeIn.RevisionNo,
+                    StyleNo = storeIn.StyleNo ?? string.Empty,
+                    CustomerName = storeIn.CustomerName ?? string.Empty,
+                    Components = storeIn.Components ?? string.Empty,
+                    CutNo = string.Join(", ", productionsForThisStoreIn.Select(p => p.CutNo).Distinct()),
+                    IssueDate = firstProd.IssueDate ?? string.Empty,
+                    LineNo = string.Join(", ", productionsForThisStoreIn.Select(p => p.LineNo).Distinct()),
+                    IssueQty = totalIssued,
+                    RemainingDispatchQty = remainingDispatchQty,
+                    ScheduleNo = storeIn.ScheduleNo,
+                    BodyColour = storeIn.BodyColour ?? string.Empty,
+                    PrintColour = storeIn.PrintColour ?? string.Empty,
+                    Season = storeIn.Season ?? string.Empty,
+                    Cuts = storeIn.Cuts?.Select(c => new GatepassCutDto
+                    {
+                        CutNo = c.CutNo,
+                        CutQty = c.CutQty,
+                        Bundles = c.Bundles?.Select(b => new GatepassBundleDto
+                        {
+                            BundleNo = b.BundleNo,
+                            BundleQty = b.BundleQty,
+                            Size = b.Size,
+                            NumberRange = b.NumberRange ?? string.Empty
+                        }).ToList() ?? new()
+                    }).ToList() ?? new()
+                };
+            })
+            .Where(x => x != null && x.RemainingDispatchQty > 0)
+            .ToList();
 
             return Ok(eligible);
         }
@@ -78,8 +121,8 @@ namespace CpPrinting.Api.Controllers
         [HttpPost("advicenotes")]
         public async Task<ActionResult<AdviceNoteRecord>> CreateAdviceNote(AdviceNoteRecord note)
         {
-            if (string.IsNullOrWhiteSpace(note.ProductionRecordId))
-                return BadRequest("ProductionRecordId is required.");
+            if (string.IsNullOrWhiteSpace(note.StoreInRecordId))
+                return BadRequest("StoreInRecordId is required.");
 
             if (string.IsNullOrWhiteSpace(note.AdNo))
                 return BadRequest("AdNo is required.");
@@ -90,41 +133,48 @@ namespace CpPrinting.Api.Controllers
             if (note.DispatchQty <= 0)
                 return BadRequest("DispatchQty must be greater than zero.");
 
-            var productionRecord = await _context.StoreProductionRecords
-                .FirstOrDefaultAsync(p => p.Id == note.ProductionRecordId);
+            var storeIn = await _context.StoreInRecords
+                .FirstOrDefaultAsync(s => s.Id == note.StoreInRecordId);
 
-            if (productionRecord == null)
-                return BadRequest("Linked Production record not found.");
+            if (storeIn == null)
+                return BadRequest("Linked Store-In record not found.");
+
+            // Get all production records for this store-in
+            var productionRecords = await _context.StoreProductionRecords
+                .Where(p => p.StoreInRecordId == note.StoreInRecordId)
+                .ToListAsync();
+
+            if (!productionRecords.Any())
+                return BadRequest("No production records found for this Store-In record.");
+
+            var totalIssued = productionRecords.Sum(p => p.IssueQty);
+            var productionRecordIds = productionRecords.Select(p => p.Id).ToList();
 
             var totalAlreadyDispatched = await _context.AdviceNotes
-                .Where(n => n.ProductionRecordId == note.ProductionRecordId)
+                .Where(n => productionRecordIds.Contains(n.ProductionRecordId) ||
+                            n.StoreInRecordId == note.StoreInRecordId)
                 .SumAsync(n => n.DispatchQty);
 
-            var remainingDispatchQty = Math.Max(0, productionRecord.IssueQty - totalAlreadyDispatched);
+            var remainingDispatchQty = Math.Max(0, totalIssued - totalAlreadyDispatched);
 
             if (note.DispatchQty > remainingDispatchQty)
                 return BadRequest($"DispatchQty exceeds remaining dispatchable qty ({remainingDispatchQty}).");
 
             if (string.IsNullOrWhiteSpace(note.Id))
-            {
                 note.Id = Guid.NewGuid().ToString();
-            }
 
             // Backend source of truth
-            note.StoreInRecordId = productionRecord.StoreInRecordId;
-            note.SubmissionId = productionRecord.SubmissionId;
-            note.RevisionNo = productionRecord.RevisionNo;
-            note.StyleNo = productionRecord.StyleNo;
-            note.CustomerName = productionRecord.CustomerName;
-            note.CutNo = productionRecord.CutNo;
-            note.Component = productionRecord.Components;
+            note.ProductionRecordId = string.Join(",", productionRecordIds);
+            note.SubmissionId = storeIn.SubmissionId;
+            note.RevisionNo = storeIn.RevisionNo;
+            note.StyleNo = storeIn.StyleNo ?? string.Empty;
+            note.CustomerName = storeIn.CustomerName ?? string.Empty;
+            note.CutNo = string.Join(", ", productionRecords.Select(p => p.CutNo).Distinct());
+            note.Component = storeIn.Components ?? string.Empty;
             note.BalanceQty = Math.Max(0, remainingDispatchQty - note.DispatchQty);
 
-            // Normalize row linkage
-            foreach (var row in note.Rows.Values)
-            {
-                row.ProductionRecordId = productionRecord.Id;
-            }
+            if (storeIn != null)
+                note.ScheduleNo = storeIn.ScheduleNo;
 
             _context.AdviceNotes.Add(note);
             await _context.SaveChangesAsync();
@@ -162,32 +212,26 @@ namespace CpPrinting.Api.Controllers
             if (note.DispatchQty > remainingDispatchQty)
                 return BadRequest($"DispatchQty exceeds remaining dispatchable qty ({remainingDispatchQty}).");
 
+            // Update editable fields
             existing.AdNo = note.AdNo;
             existing.DeliveryDate = note.DeliveryDate;
             existing.Attn = note.Attn;
             existing.Address = note.Address;
-            existing.ScheduleNo = note.ScheduleNo;
             existing.DispatchQty = note.DispatchQty;
+            existing.BalanceQty = Math.Max(0, remainingDispatchQty - note.DispatchQty);
             existing.Rows = note.Rows;
             existing.ReceivedByName = note.ReceivedByName;
             existing.PrepByName = note.PrepByName;
             existing.AuthByName = note.AuthByName;
 
-            existing.StoreInRecordId = productionRecord.StoreInRecordId;
-            existing.SubmissionId = productionRecord.SubmissionId;
-            existing.RevisionNo = productionRecord.RevisionNo;
-            existing.StyleNo = productionRecord.StyleNo;
-            existing.CustomerName = productionRecord.CustomerName;
-            existing.CutNo = productionRecord.CutNo;
-            existing.Component = productionRecord.Components;
-            existing.BalanceQty = Math.Max(0, remainingDispatchQty - note.DispatchQty);
-
-            foreach (var row in existing.Rows.Values)
-            {
-                row.ProductionRecordId = productionRecord.Id;
-            }
+            // Re-apply backend truth
+            existing.StyleNo = productionRecord.StyleNo ?? string.Empty;
+            existing.CustomerName = productionRecord.CustomerName ?? string.Empty;
+            existing.CutNo = productionRecord.CutNo ?? string.Empty;
+            existing.Component = productionRecord.Components ?? string.Empty;
 
             await _context.SaveChangesAsync();
+
             return NoContent();
         }
 

@@ -7,3 +7,4 @@ namespace CpPrinting.Api.DTOs
         public string Role { get; set; } = string.Empty;
     }
 }
+

@@ -5,14 +5,19 @@
 namespace CpPrinting.Api.Migrations
 {
     /// <inheritdoc />
-    public partial class AddUserPasswords : Migration
+    public partial class RestructureCpiReport : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.RenameColumn(
+                name: "InspectionRows",
+                table: "CpiReports",
+                newName: "CutInspections");
+
             migrationBuilder.AddColumn<string>(
-                name: "PasswordHash",
-                table: "Users",
+                name: "CpiAuditor",
+                table: "CpiReports",
                 type: "nvarchar(max)",
                 nullable: false,
                 defaultValue: "");
@@ -22,8 +27,13 @@ namespace CpPrinting.Api.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropColumn(
-                name: "PasswordHash",
-                table: "Users");
+                name: "CpiAuditor",
+                table: "CpiReports");
+
+            migrationBuilder.RenameColumn(
+                name: "CutInspections",
+                table: "CpiReports",
+                newName: "InspectionRows");
         }
     }
 }

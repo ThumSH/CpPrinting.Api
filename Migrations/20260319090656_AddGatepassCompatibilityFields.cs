@@ -5,7 +5,7 @@
 namespace CpPrinting.Api.Migrations
 {
     /// <inheritdoc />
-    public partial class RelaxStoreInRequiredFields : Migration
+    public partial class AddGatepassCompatibilityFields : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)

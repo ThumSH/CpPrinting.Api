@@ -5,8 +5,13 @@ namespace CpPrinting.Api.Models
     public class AdviceNoteRow
     {
         public string ProductionRecordId { get; set; } = string.Empty;
-        public int Pd { get; set; } // Print Defect / Panel Defect
-        public int Fd { get; set; } // Fabric Defect
+        public string Colour { get; set; } = string.Empty;
+        public string BundleNo { get; set; } = string.Empty;
+        public string Size { get; set; } = string.Empty;
+        public string CutForm { get; set; } = string.Empty;
+        public int TotalPcs { get; set; }
+        public int Pd { get; set; }
+        public int Fd { get; set; }
         public int GoodQty { get; set; }
     }
 
@@ -30,16 +35,16 @@ namespace CpPrinting.Api.Models
         public string CutNo { get; set; } = string.Empty;
         public string Component { get; set; } = string.Empty;
 
-        // Overall dispatch tracking
         public int DispatchQty { get; set; }
         public int BalanceQty { get; set; }
 
-        // Dynamic Grid
+        // Dynamic grid — per-bundle rows stored as JSON
         public Dictionary<string, AdviceNoteRow> Rows { get; set; } = new();
 
-        // Footer fields
+        // Footer
         public string ReceivedByName { get; set; } = string.Empty;
         public string PrepByName { get; set; } = string.Empty;
         public string AuthByName { get; set; } = string.Empty;
+        public string Remarks { get; set; } = string.Empty;
     }
 }

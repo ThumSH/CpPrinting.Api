@@ -23,6 +23,7 @@ namespace CpPrinting.Api.Controllers
 
         // ==========================================
         // ELIGIBLE STORE-IN ITEMS FOR CPI
+        // Now reads cut/bundle data from child tables
         // ==========================================
 
         [HttpGet("eligible-cpi")]
@@ -32,29 +33,57 @@ namespace CpPrinting.Api.Controllers
                 .Select(r => r.StoreInRecordId)
                 .ToListAsync();
 
-            var eligibleItems = await _context.StoreInRecords
+            var eligibleRecords = await _context.StoreInRecords
+                .Include(r => r.Cuts)
+                    .ThenInclude(c => c.Bundles)
                 .Where(r => !existingCpiStoreInIds.Contains(r.Id))
                 .OrderByDescending(r => r.CutInDate)
-                .Select(r => new EligibleCpiDto
+                .ToListAsync();
+
+            var eligibleItems = eligibleRecords.Select(r =>
+            {
+                // Flatten cuts/bundles into summary fields for CPI display
+                var firstCut = r.Cuts.FirstOrDefault();
+                var firstBundle = firstCut?.Bundles.FirstOrDefault();
+
+                return new EligibleCpiDto
                 {
                     StoreInRecordId = r.Id,
                     SubmissionId = r.SubmissionId,
                     RevisionNo = r.RevisionNo,
-                    StyleNo = r.StyleNo,
-                    CustomerName = r.CustomerName,
+                    StyleNo = r.StyleNo ?? string.Empty,
+                    CustomerName = r.CustomerName ?? string.Empty,
                     ScheduleNo = r.ScheduleNo,
-                    CutNo = r.CutNo,
-                    BodyColour = r.BodyColour,
-                    PrintColour = r.PrintColour,
-                    Components = r.Components,
-                    Season = r.Season,
+                    BodyColour = r.BodyColour ?? string.Empty,
+                    PrintColour = r.PrintColour ?? string.Empty,
+                    Components = r.Components ?? string.Empty,
+                    Season = r.Season ?? string.Empty,
                     ReceivedQty = r.InQty,
-                    CutInDate = r.CutInDate,
-                    Size = r.Size,
-                    BundleQty = r.BundleQty,
-                    NumberRange = r.NumberRange
-                })
-                .ToListAsync();
+                    CutInDate = r.CutInDate ?? string.Empty,
+                    // Aggregate cut/bundle info from child tables
+                    CutCount = r.Cuts.Count,
+                    TotalCutQty = r.Cuts.Sum(c => c.CutQty),
+                    TotalBundleCount = r.Cuts.Sum(c => c.Bundles.Count),
+                    // For backward compat, provide first cut/bundle info
+                    CutNo = firstCut?.CutNo ?? string.Empty,
+                    Size = firstBundle?.Size ?? string.Empty,
+                    BundleQty = firstBundle?.BundleQty ?? 0,
+                    NumberRange = firstBundle?.NumberRange ?? string.Empty,
+                    // Full cuts data for the CPI grid
+                    Cuts = r.Cuts.Select(c => new CpiCutDto
+                    {
+                        CutNo = c.CutNo,
+                        CutQty = c.CutQty,
+                        Bundles = c.Bundles.Select(b => new CpiBundleDto
+                        {
+                            BundleNo = b.BundleNo,
+                            BundleQty = b.BundleQty,
+                            Size = b.Size,
+                            NumberRange = b.NumberRange ?? string.Empty
+                        }).ToList()
+                    }).ToList()
+                };
+            }).ToList();
 
             return Ok(eligibleItems);
         }
@@ -97,9 +126,7 @@ namespace CpPrinting.Api.Controllers
                 return BadRequest("Only approved latest revisions from Stores can be inspected in CPI.");
 
             if (string.IsNullOrWhiteSpace(report.Id))
-            {
                 report.Id = Guid.NewGuid().ToString();
-            }
 
             // Prevent duplicate CPI for same Store-In record
             var existingReport = await _context.CpiReports
@@ -108,21 +135,18 @@ namespace CpPrinting.Api.Controllers
             if (existingReport != null)
                 return BadRequest("A CPI report already exists for this Store-In record.");
 
-            // Backend truth
+            // Backend truth — all nullable-safe
             report.SubmissionId = storeInRecord.SubmissionId;
             report.RevisionNo = storeInRecord.RevisionNo;
-            report.StyleNo = storeInRecord.StyleNo;
-            report.Customer = storeInRecord.CustomerName;
+            report.StyleNo = storeInRecord.StyleNo ?? string.Empty;
+            report.Customer = storeInRecord.CustomerName ?? string.Empty;
             report.ScheduleNo = storeInRecord.ScheduleNo;
-            report.BodyColour = storeInRecord.BodyColour;
-            report.PrintColour = storeInRecord.PrintColour;
+            report.BodyColour = storeInRecord.BodyColour ?? string.Empty;
+            report.PrintColour = storeInRecord.PrintColour ?? string.Empty;
             report.ReceivedQty = storeInRecord.InQty;
 
-            // If not set, keep summary date aligned
             if (string.IsNullOrWhiteSpace(report.SummaryDate))
-            {
                 report.SummaryDate = report.Date;
-            }
 
             _context.CpiReports.Add(report);
             await _context.SaveChangesAsync();
@@ -151,10 +175,10 @@ namespace CpPrinting.Api.Controllers
             if (storeInRecord == null)
                 return BadRequest("Linked Store-In record not found.");
 
-            // Keep trusted linkage fields locked
+            // Update editable fields
             existing.Date = report.Date;
             existing.CpiQty = report.CpiQty;
-            existing.InspectionRows = report.InspectionRows;
+            existing.CutInspections = report.CutInspections;
             existing.CuttingQty = report.CuttingQty;
             existing.CheckedQty = report.CheckedQty;
             existing.RejDamageQty = report.RejDamageQty;
@@ -164,15 +188,16 @@ namespace CpPrinting.Api.Controllers
             existing.AppRej = report.AppRej;
             existing.CheckedBy = report.CheckedBy;
             existing.SummaryDate = report.SummaryDate;
+            existing.CpiAuditor = report.CpiAuditor;
 
-            // Re-apply backend truth
+            // Re-apply backend truth (nullable-safe)
             existing.SubmissionId = storeInRecord.SubmissionId;
             existing.RevisionNo = storeInRecord.RevisionNo;
-            existing.StyleNo = storeInRecord.StyleNo;
-            existing.Customer = storeInRecord.CustomerName;
+            existing.StyleNo = storeInRecord.StyleNo ?? string.Empty;
+            existing.Customer = storeInRecord.CustomerName ?? string.Empty;
             existing.ScheduleNo = storeInRecord.ScheduleNo;
-            existing.BodyColour = storeInRecord.BodyColour;
-            existing.PrintColour = storeInRecord.PrintColour;
+            existing.BodyColour = storeInRecord.BodyColour ?? string.Empty;
+            existing.PrintColour = storeInRecord.PrintColour ?? string.Empty;
             existing.ReceivedQty = storeInRecord.InQty;
 
             await _context.SaveChangesAsync();

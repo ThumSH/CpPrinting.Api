@@ -11,8 +11,8 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CpPrinting.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260315080527_EnforceQcPassedBeforeProduction")]
-    partial class EnforceQcPassedBeforeProduction
+    [Migration("20260321135143_RestructureAuditRecords")]
+    partial class RestructureAuditRecords
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -45,7 +45,14 @@ namespace CpPrinting.Api.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<int>("BalanceQty")
+                        .HasColumnType("int");
+
                     b.Property<string>("Component")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("CustomerName")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
@@ -57,13 +64,27 @@ namespace CpPrinting.Api.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<int>("DispatchQty")
+                        .HasColumnType("int");
+
                     b.Property<string>("PrepByName")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ProductionRecordId")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("ReceivedByName")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Remarks")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("RevisionNo")
+                        .HasColumnType("int");
 
                     b.Property<string>("Rows")
                         .IsRequired()
@@ -73,7 +94,15 @@ namespace CpPrinting.Api.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("StoreInRecordId")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<string>("StyleNo")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("SubmissionId")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
@@ -139,7 +168,19 @@ namespace CpPrinting.Api.Migrations
                     b.Property<int>("AuditQty")
                         .HasColumnType("int");
 
+                    b.Property<string>("AuditorName")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Bundles")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<string>("Colour")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("CustomerName")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
@@ -151,9 +192,15 @@ namespace CpPrinting.Api.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<int>("ReleaseQty")
+                        .HasColumnType("int");
+
                     b.Property<string>("Remarks")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("RevisionNo")
+                        .HasColumnType("int");
 
                     b.Property<string>("ScheduleNo")
                         .IsRequired()
@@ -167,16 +214,51 @@ namespace CpPrinting.Api.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("StoreInRecordId")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<string>("StyleNo")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<int>("TotalQty")
-                        .HasColumnType("int");
+                    b.Property<string>("SubmissionId")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
 
                     b.HasKey("Id");
 
                     b.ToTable("AuditRecords");
+                });
+
+            modelBuilder.Entity("CpPrinting.Api.Models.BundleRecord", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("BundleNo")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("BundleQty")
+                        .HasColumnType("int");
+
+                    b.Property<string>("CutRecordId")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("NumberRange")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Size")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CutRecordId");
+
+                    b.ToTable("BundleRecords");
                 });
 
             modelBuilder.Entity("CpPrinting.Api.Models.CPIReport", b =>
@@ -202,6 +284,10 @@ namespace CpPrinting.Api.Migrations
                     b.Property<int>("CheckedQty")
                         .HasColumnType("int");
 
+                    b.Property<string>("CpiAuditor")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<int>("CpiQty")
                         .HasColumnType("int");
 
@@ -209,14 +295,14 @@ namespace CpPrinting.Api.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("CutInspections")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<int>("CuttingQty")
                         .HasColumnType("int");
 
                     b.Property<string>("Date")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("InspectionRows")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
@@ -266,12 +352,57 @@ namespace CpPrinting.Api.Migrations
                     b.ToTable("CpiReports");
                 });
 
+            modelBuilder.Entity("CpPrinting.Api.Models.CutRecord", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("CutNo")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("CutQty")
+                        .HasColumnType("int");
+
+                    b.Property<string>("StoreInRecordId")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(450)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("StoreInRecordId");
+
+                    b.ToTable("CutRecords");
+                });
+
             modelBuilder.Entity("CpPrinting.Api.Models.DeliveryTrackerReport", b =>
                 {
                     b.Property<string>("Id")
                         .HasColumnType("nvarchar(450)");
 
+                    b.Property<string>("AdNo")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("AdviceNoteId")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("BalanceQty")
+                        .HasColumnType("int");
+
                     b.Property<string>("CreatedAt")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("CustomerName")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("DeliveryQty")
+                        .HasColumnType("int");
+
+                    b.Property<string>("DeliveryStatus")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
@@ -282,11 +413,26 @@ namespace CpPrinting.Api.Migrations
                     b.Property<int>("OrderQty")
                         .HasColumnType("int");
 
+                    b.Property<string>("ProductionRecordId")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("RevisionNo")
+                        .HasColumnType("int");
+
                     b.Property<string>("Rows")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("StoreInRecordId")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<string>("StyleNo")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("SubmissionId")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
@@ -369,43 +515,24 @@ namespace CpPrinting.Api.Migrations
                         .HasColumnType("int");
 
                     b.Property<string>("BodyColour")
-                        .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<int>("BulkQty")
                         .HasColumnType("int");
 
-                    b.Property<int>("BundleQty")
-                        .HasColumnType("int");
-
                     b.Property<string>("Components")
-                        .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("CustomerName")
-                        .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("CutInDate")
-                        .IsRequired()
                         .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("CutNo")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<int>("CutQty")
-                        .HasColumnType("int");
 
                     b.Property<int>("InQty")
                         .HasColumnType("int");
 
-                    b.Property<string>("NumberRange")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
                     b.Property<string>("PrintColour")
-                        .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<int>("RevisionNo")
@@ -416,20 +543,20 @@ namespace CpPrinting.Api.Migrations
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("Season")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("Size")
-                        .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("StyleNo")
-                        .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("SubmissionId")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("TotalCutQty")
+                        .HasColumnType("int");
+
+                    b.Property<int>("UncutBalance")
+                        .HasColumnType("int");
 
                     b.HasKey("Id");
 
@@ -445,26 +572,21 @@ namespace CpPrinting.Api.Migrations
                         .HasColumnType("int");
 
                     b.Property<string>("Components")
-                        .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("CustomerName")
-                        .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("CutNo")
-                        .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("IssueDate")
-                        .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<int>("IssueQty")
                         .HasColumnType("int");
 
                     b.Property<string>("LineNo")
-                        .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<int>("RevisionNo")
@@ -475,11 +597,9 @@ namespace CpPrinting.Api.Migrations
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("StyleNo")
-                        .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("SubmissionId")
-                        .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
                     b.HasKey("Id");
@@ -549,44 +669,36 @@ namespace CpPrinting.Api.Migrations
                     b.ToTable("Users");
                 });
 
-            modelBuilder.Entity("CpPrinting.Api.Models.AuditRecord", b =>
+            modelBuilder.Entity("CpPrinting.Api.Models.BundleRecord", b =>
                 {
-                    b.OwnsMany("CpPrinting.Api.Models.AuditBundle", "Bundles", b1 =>
-                        {
-                            b1.Property<string>("AuditRecordId")
-                                .HasColumnType("nvarchar(450)");
+                    b.HasOne("CpPrinting.Api.Models.CutRecord", "CutRecord")
+                        .WithMany("Bundles")
+                        .HasForeignKey("CutRecordId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
-                            b1.Property<int>("__synthesizedOrdinal")
-                                .ValueGeneratedOnAdd()
-                                .HasColumnType("int");
+                    b.Navigation("CutRecord");
+                });
 
-                            b1.Property<string>("BundleNo")
-                                .IsRequired()
-                                .HasColumnType("nvarchar(max)");
+            modelBuilder.Entity("CpPrinting.Api.Models.CutRecord", b =>
+                {
+                    b.HasOne("CpPrinting.Api.Models.StoreInRecord", "StoreInRecord")
+                        .WithMany("Cuts")
+                        .HasForeignKey("StoreInRecordId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
-                            b1.Property<string>("Id")
-                                .HasColumnType("nvarchar(max)");
+                    b.Navigation("StoreInRecord");
+                });
 
-                            b1.Property<int>("Qty")
-                                .HasColumnType("int");
-
-                            b1.Property<string>("Size")
-                                .IsRequired()
-                                .HasColumnType("nvarchar(max)");
-
-                            b1.HasKey("AuditRecordId", "__synthesizedOrdinal");
-
-                            b1.ToTable("AuditRecords");
-
-                            b1
-                                .ToJson("Bundles")
-                                .HasColumnType("nvarchar(max)");
-
-                            b1.WithOwner()
-                                .HasForeignKey("AuditRecordId");
-                        });
-
+            modelBuilder.Entity("CpPrinting.Api.Models.CutRecord", b =>
+                {
                     b.Navigation("Bundles");
+                });
+
+            modelBuilder.Entity("CpPrinting.Api.Models.StoreInRecord", b =>
+                {
+                    b.Navigation("Cuts");
                 });
 #pragma warning restore 612, 618
         }
