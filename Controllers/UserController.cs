@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using CpPrinting.Api.Data;
 using CpPrinting.Api.DTOs;
 using CpPrinting.Api.Models;
+using CpPrinting.Api.Services;
 
 namespace CpPrinting.Api.Controllers
 {
@@ -13,15 +14,17 @@ namespace CpPrinting.Api.Controllers
     public class UsersController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly ActivityLogger _logger;
 
         private static readonly string[] AllowedRoles =
         {
             "Admin", "Developer", "QC", "Gatepass", "Audit", "Stores", "Worker"
         };
 
-        public UsersController(AppDbContext context)
+        public UsersController(AppDbContext context, ActivityLogger logger)
         {
             _context = context;
+            _logger = logger;
         }
 
         [HttpGet]
@@ -80,7 +83,7 @@ namespace CpPrinting.Api.Controllers
             if (usernameExists)
                 return BadRequest("Username already exists.");
 
-            var user = new User
+            var newUser = new User
             {
                 Id = Guid.NewGuid().ToString(),
                 Username = dto.Username.Trim(),
@@ -89,18 +92,19 @@ namespace CpPrinting.Api.Controllers
                 Role = dto.Role
             };
 
-            _context.Users.Add(user);
+            _context.Users.Add(newUser);
             await _context.SaveChangesAsync();
 
-            var response = new UserResponseDto
-            {
-                Id = user.Id,
-                Username = user.Username,
-                Name = user.Name,
-                Role = user.Role
-            };
+            await _logger.Log(User, HttpContext, "Create", "User", newUser.Id,
+                $"Created user '{newUser.Name}' (@{newUser.Username}) — {newUser.Role}");
 
-            return CreatedAtAction(nameof(GetUser), new { id = user.Id }, response);
+            return Ok(new UserResponseDto
+            {
+                Id = newUser.Id,
+                Username = newUser.Username,
+                Name = newUser.Name,
+                Role = newUser.Role
+            });
         }
 
         [HttpPut("{id}")]
@@ -134,11 +138,16 @@ namespace CpPrinting.Api.Controllers
                 return BadRequest("You cannot remove your own Admin role.");
             }
 
+            var oldRole = user.Role;
             user.Username = dto.Username.Trim();
             user.Name = dto.Name.Trim();
             user.Role = dto.Role;
 
             await _context.SaveChangesAsync();
+
+            await _logger.Log(User, HttpContext, "Update", "User", id,
+                $"Updated user '{user.Name}' (@{user.Username})" +
+                (oldRole != dto.Role ? $" — role changed {oldRole} → {dto.Role}" : ""));
 
             return Ok(new UserResponseDto
             {
@@ -163,6 +172,9 @@ namespace CpPrinting.Api.Controllers
             user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.NewPassword);
             await _context.SaveChangesAsync();
 
+            await _logger.Log(User, HttpContext, "Update", "User", id,
+                $"Reset password for '{user.Name}' (@{user.Username})");
+
             return Ok(new { message = "Password reset successfully." });
         }
 
@@ -181,8 +193,14 @@ namespace CpPrinting.Api.Controllers
                 return BadRequest("You cannot delete your own account.");
             }
 
+            var userName = user.Name;
+            var userRole = user.Role;
+
             _context.Users.Remove(user);
             await _context.SaveChangesAsync();
+
+            await _logger.Log(User, HttpContext, "Delete", "User", id,
+                $"Deleted user '{userName}' ({userRole})");
 
             return Ok(new { message = "User deleted successfully." });
         }

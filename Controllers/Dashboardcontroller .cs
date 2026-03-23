@@ -145,5 +145,118 @@ namespace CpPrinting.Api.Controllers
                 recent = new { storeIn = recentStoreIn, dispatches = recentDispatches, audits = recentAudits }
             });
         }
+
+        /// <summary>
+        /// Per-style pipeline breakdown — shows where each approved style stands
+        /// across the entire workflow.
+        /// </summary>
+        [HttpGet("styles")]
+        public async Task<ActionResult> GetStylesOverview()
+        {
+            // All approved styles
+            var approvals = await _context.Approvals
+                .Where(a => a.Status == "Approved")
+                .ToListAsync();
+
+            if (approvals.Count == 0)
+                return Ok(Array.Empty<object>());
+
+            // Preload all downstream data
+            var allStoreIn = await _context.StoreInRecords.ToListAsync();
+            var allProduction = await _context.StoreProductionRecords.ToListAsync();
+            var allCpi = await _context.CpiReports.ToListAsync();
+            var allAdviceNotes = await _context.AdviceNotes.ToListAsync();
+            var allAudits = await _context.AuditRecords.ToListAsync();
+            var allDailyOutput = await _context.DailyOutputRecords.ToListAsync();
+
+            var styles = approvals.Select(approval =>
+            {
+                var bulkQty = int.TryParse(approval.BulkOrderQty, out var bq) ? bq : 0;
+
+                // Store-In for this submission
+                var storeIns = allStoreIn.Where(s => s.SubmissionId == approval.SubmissionId).ToList();
+                var totalReceived = storeIns.Sum(s => s.InQty);
+                var totalCuts = storeIns.Sum(s => s.Cuts?.Count ?? 0);
+
+                // Production
+                var storeInIds = storeIns.Select(s => s.Id).ToHashSet();
+                var productions = allProduction.Where(p => storeInIds.Contains(p.StoreInRecordId)).ToList();
+                var totalIssued = productions.Sum(p => p.IssueQty);
+
+                // QC
+                var cpiReports = allCpi.Where(c => storeInIds.Contains(c.StoreInRecordId)).ToList();
+                var qcPassed = cpiReports.Count(c => c.InspectionStatus == "Passed");
+                var qcFailed = cpiReports.Count(c => c.InspectionStatus == "Failed");
+                var qcPending = cpiReports.Count(c => c.InspectionStatus == "Pending");
+
+                // Gatepass
+                var dispatches = allAdviceNotes.Where(a => storeInIds.Contains(a.StoreInRecordId)).ToList();
+                var totalDispatched = dispatches.Sum(a => a.DispatchQty);
+
+                // Audit
+                var audits = allAudits.Where(a => storeInIds.Contains(a.StoreInRecordId)).ToList();
+                var auditPassed = audits.Count(a => a.Status == "Pass");
+                var auditFailed = audits.Count(a => a.Status == "Fail");
+
+                // Worker output
+                var workerRecords = allDailyOutput.Where(d => storeInIds.Contains(d.StoreInRecordId)).ToList();
+                var totalWorkerOutput = workerRecords.Sum(d => d.TotalSeating + d.TotalPrinting + d.TotalCuring + d.TotalChecking + d.TotalPacking + d.TotalDispatch);
+
+                // Pipeline stage
+                var remainingBulk = Math.Max(0, bulkQty - totalReceived);
+                string stage;
+                if (totalDispatched >= bulkQty && bulkQty > 0) stage = "Completed";
+                else if (totalDispatched > 0) stage = "Dispatching";
+                else if (totalIssued > 0) stage = "In Production";
+                else if (qcPassed > 0) stage = "QC Passed";
+                else if (totalReceived > 0) stage = "Received";
+                else stage = "Approved";
+
+                return new
+                {
+                    styleNo = approval.StyleNo,
+                    customerName = approval.CustomerName,
+                    scheduleNo = storeIns.FirstOrDefault()?.ScheduleNo ?? "-",
+                    bulkQty,
+                    stage,
+
+                    // Store In
+                    storeInCount = storeIns.Count,
+                    totalReceived,
+                    remainingBulk,
+                    receivedPct = bulkQty > 0 ? Math.Round((double)totalReceived / bulkQty * 100, 1) : 0,
+                    totalCuts,
+
+                    // QC
+                    qcTotal = cpiReports.Count,
+                    qcPassed,
+                    qcFailed,
+                    qcPending,
+
+                    // Production
+                    productionCount = productions.Count,
+                    totalIssued,
+
+                    // Dispatch
+                    dispatchCount = dispatches.Count,
+                    totalDispatched,
+                    dispatchedPct = bulkQty > 0 ? Math.Round((double)totalDispatched / bulkQty * 100, 1) : 0,
+
+                    // Audit
+                    auditTotal = audits.Count,
+                    auditPassed,
+                    auditFailed,
+
+                    // Worker
+                    workerEntries = workerRecords.Count,
+                    totalWorkerOutput,
+                };
+            })
+            .OrderByDescending(s => s.stage == "Completed" ? 0 : 1) // Completed at bottom
+            .ThenByDescending(s => s.totalReceived) // Most active first
+            .ToList();
+
+            return Ok(styles);
+        }
     }
 }

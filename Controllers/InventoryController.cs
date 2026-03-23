@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authorization;
 using CpPrinting.Api.Data;
 using CpPrinting.Api.Models;
 using CpPrinting.Api.DTOs;
+using CpPrinting.Api.Services;
 
 namespace CpPrinting.Api.Controllers
 {
@@ -13,10 +14,12 @@ namespace CpPrinting.Api.Controllers
     public class InventoryController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly ActivityLogger _logger;
 
-        public InventoryController(AppDbContext context)
+        public InventoryController(AppDbContext context, ActivityLogger logger)
         {
             _context = context;
+            _logger = logger;
         }
 
         // ==========================================
@@ -360,6 +363,9 @@ namespace CpPrinting.Api.Controllers
             _context.StoreInRecords.Add(record);
             await _context.SaveChangesAsync();
 
+            await _logger.Log(User, HttpContext, "Create", "StoreIn", record.Id,
+                $"Created store-in for {record.StyleNo} — {record.InQty} pcs, Schedule: {record.ScheduleNo}");
+
             return CreatedAtAction(nameof(GetStoreInRecord), new { id = record.Id }, MapToResponse(record));
         }
 
@@ -474,6 +480,10 @@ namespace CpPrinting.Api.Controllers
             }).ToList();
 
             await _context.SaveChangesAsync();
+
+            await _logger.Log(User, HttpContext, "Update", "StoreIn", id,
+                $"Updated store-in for {existing.StyleNo} — {existing.InQty} pcs");
+
             return NoContent();
         }
 
@@ -521,6 +531,10 @@ namespace CpPrinting.Api.Controllers
 
             _context.StoreInRecords.Remove(record); // Cascade deletes cuts + bundles
             await _context.SaveChangesAsync();
+
+            await _logger.Log(User, HttpContext, "Delete", "StoreIn", id,
+                $"Deleted store-in for {record.StyleNo} ({record.InQty} pcs)");
+
             return NoContent();
         }
 
@@ -677,11 +691,14 @@ namespace CpPrinting.Api.Controllers
             }
 
             await _context.SaveChangesAsync();
+
+            var totalIssued = saved.Sum(r => r.IssueQty);
+            await _logger.Log(User, HttpContext, "Create", "Production", string.Join(",", saved.Select(r => r.Id)),
+                $"Issued {totalIssued} pcs to production — {saved.Count} record(s) for {saved.FirstOrDefault()?.StyleNo}");
+
             return Ok(saved);
         }
 
-        // ==========================================
-        // PRODUCTION ISSUES — GET
         // ==========================================
         [HttpGet("production")]
         public async Task<ActionResult<IEnumerable<StoreProductionRecord>>> GetProductionRecords()
@@ -819,6 +836,10 @@ namespace CpPrinting.Api.Controllers
 
             _context.StoreProductionRecords.Remove(record);
             await _context.SaveChangesAsync();
+
+            await _logger.Log(User, HttpContext, "Delete", "Production", id,
+                $"Deleted production record for {record.StyleNo}, Cut: {record.CutNo} ({record.IssueQty} pcs)");
+
             return NoContent();
         }
 

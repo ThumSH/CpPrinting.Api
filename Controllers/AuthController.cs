@@ -7,6 +7,7 @@ using CpPrinting.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
 using CpPrinting.Api.Models;
+using CpPrinting.Api.Services;
 
 namespace CpPrinting.Api.Controllers
 {
@@ -16,18 +17,20 @@ namespace CpPrinting.Api.Controllers
     {
         private readonly AppDbContext _context;
         private readonly IConfiguration _configuration;
+        private readonly ActivityLogger _logger;
 
-        public AuthController(AppDbContext context, IConfiguration configuration)
+        public AuthController(AppDbContext context, IConfiguration configuration, ActivityLogger logger)
         {
             _context = context;
             _configuration = configuration;
+            _logger = logger;
         }
 
         // --- DTOS ---
         public class LoginRequest
         {
             public string Username { get; set; } = string.Empty;
-            public string Password { get; set; } = string.Empty; 
+            public string Password { get; set; } = string.Empty;
         }
 
         public class RegisterRequest
@@ -46,13 +49,16 @@ namespace CpPrinting.Api.Controllers
         {
             var user = await _context.Users.FirstOrDefaultAsync(u => u.Username == request.Username);
 
-            // 1. Check if user exists AND if the password matches the BCrypt hash
-           if (user == null || string.IsNullOrEmpty(user.PasswordHash) || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
+            if (user == null || string.IsNullOrEmpty(user.PasswordHash) || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
             {
+                // Log failed login attempt
+                var failIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                await _logger.LogLogin("unknown", request.Username, "unknown", failIp);
+
                 return Unauthorized(new { message = "Invalid username or password." });
             }
 
-            // 2. Generate the JWT Token
+            // Generate the JWT Token
             var jwtSettings = _configuration.GetSection("JwtSettings");
             var secretKey = Encoding.UTF8.GetBytes(jwtSettings["SecretKey"]!);
 
@@ -75,6 +81,10 @@ namespace CpPrinting.Api.Controllers
             var tokenHandler = new JwtSecurityTokenHandler();
             var token = tokenHandler.CreateToken(tokenDescriptor);
 
+            // Log successful login
+            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            await _logger.LogLogin(user.Id, user.Name, user.Role, ip);
+
             return Ok(new
             {
                 token = tokenHandler.WriteToken(token),
@@ -89,7 +99,6 @@ namespace CpPrinting.Api.Controllers
         [HttpPost("seed")]
         public async Task<IActionResult> SeedAdmin()
         {
-            // Check if an admin already exists so we don't accidentally make duplicates
             if (await _context.Users.AnyAsync(u => u.Role == "Admin"))
             {
                 return BadRequest("An Admin already exists in the system.");
@@ -99,7 +108,7 @@ namespace CpPrinting.Api.Controllers
             {
                 Id = Guid.NewGuid().ToString(),
                 Username = "admin",
-                PasswordHash = BCrypt.Net.BCrypt.HashPassword("Admin123!"), // The secure hash is generated here
+                PasswordHash = BCrypt.Net.BCrypt.HashPassword("Admin123!"),
                 Name = "Master Administrator",
                 Role = "Admin"
             };
@@ -113,28 +122,30 @@ namespace CpPrinting.Api.Controllers
         // ==========================================
         // 2. REGISTER NEW EMPLOYEE (Admin Only)
         // ==========================================
-        [Authorize(Roles = "Admin")] // CRITICAL: Only Admins can create new user accounts
+        [Authorize(Roles = "Admin")]
         [HttpPost("register")]
         public async Task<IActionResult> RegisterUser([FromBody] RegisterRequest request)
         {
-            // Check if username is already taken
             if (await _context.Users.AnyAsync(u => u.Username == request.Username))
             {
                 return BadRequest("Username is already taken.");
             }
 
-            // Create the new user and HASH the password immediately
             var newUser = new Models.User
             {
-                Id = Guid.NewGuid().ToString(), // Generate a unique secure ID
+                Id = Guid.NewGuid().ToString(),
                 Username = request.Username,
-                PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password), // Scramble it!
+                PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password),
                 Name = request.Name,
                 Role = request.Role
             };
 
             _context.Users.Add(newUser);
             await _context.SaveChangesAsync();
+
+            // Log user creation
+            await _logger.Log(User, HttpContext, "Create", "User", newUser.Id,
+                $"Created user '{newUser.Name}' (@{newUser.Username}) with role {newUser.Role}");
 
             return Ok(new { message = "User registered successfully." });
         }

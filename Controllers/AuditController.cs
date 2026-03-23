@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
 using CpPrinting.Api.Data;
 using CpPrinting.Api.Models;
+using CpPrinting.Api.Services;
 
 namespace CpPrinting.Api.Controllers
 {
@@ -12,11 +13,13 @@ namespace CpPrinting.Api.Controllers
     public class AuditController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly ActivityLogger _logger;
         private static readonly string[] AllowedStatuses = { "Pass", "Fail" };
 
-        public AuditController(AppDbContext context)
+        public AuditController(AppDbContext context, ActivityLogger logger)
         {
             _context = context;
+            _logger = logger;
         }
 
         [HttpGet("eligible")]
@@ -107,6 +110,10 @@ namespace CpPrinting.Api.Controllers
             }
 
             await _context.SaveChangesAsync();
+
+            await _logger.Log(User, HttpContext, "Create", "Audit", string.Join(",", saved.Select(r => r.Id)),
+                $"Created {saved.Count} audit(s) for {saved.FirstOrDefault()?.StyleNo}, Cut: {saved.FirstOrDefault()?.CutNo} — {saved.Select(r => r.Status).Distinct().First()}");
+
             return Ok(saved);
         }
 
@@ -118,6 +125,10 @@ namespace CpPrinting.Api.Controllers
 
             _context.AuditRecords.Remove(record);
             await _context.SaveChangesAsync();
+
+            await _logger.Log(User, HttpContext, "Delete", "Audit", id,
+                $"Deleted audit for {record.StyleNo}, Cut: {record.CutNo}");
+
             return NoContent();
         }
     }

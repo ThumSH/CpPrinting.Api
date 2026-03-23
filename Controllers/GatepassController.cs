@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
 using CpPrinting.Api.Data;
 using CpPrinting.Api.Models;
+using CpPrinting.Api.Services;
 using CpPrinting.Api.DTOs;
 
 namespace CpPrinting.Api.Controllers
@@ -13,10 +14,12 @@ namespace CpPrinting.Api.Controllers
     public class GatepassController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly ActivityLogger _logger;
 
-        public GatepassController(AppDbContext context)
+        public GatepassController(AppDbContext context, ActivityLogger logger)
         {
             _context = context;
+            _logger = logger;
         }
 
         // ==========================================
@@ -179,6 +182,9 @@ namespace CpPrinting.Api.Controllers
             _context.AdviceNotes.Add(note);
             await _context.SaveChangesAsync();
 
+            await _logger.Log(User, HttpContext, "Create", "AdviceNote", note.Id,
+                $"Created advice note {note.AdNo} for {note.StyleNo} — {note.DispatchQty} pcs");
+
             return CreatedAtAction(nameof(GetAdviceNotes), new { id = note.Id }, note);
         }
 
@@ -241,6 +247,9 @@ namespace CpPrinting.Api.Controllers
 
             await _context.SaveChangesAsync();
 
+            await _logger.Log(User, HttpContext, "Update", "AdviceNote", id,
+                $"Updated advice note {existing.AdNo} — {existing.DispatchQty} pcs");
+
             return NoContent();
         }
 
@@ -252,6 +261,9 @@ namespace CpPrinting.Api.Controllers
 
             _context.AdviceNotes.Remove(note);
             await _context.SaveChangesAsync();
+
+            await _logger.Log(User, HttpContext, "Delete", "AdviceNote", id,
+                $"Deleted advice note {note.AdNo} for {note.StyleNo}");
 
             return NoContent();
         }

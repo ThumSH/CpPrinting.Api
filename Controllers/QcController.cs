@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
 using CpPrinting.Api.Data;
 using CpPrinting.Api.Models;
+using CpPrinting.Api.Services;
 using CpPrinting.Api.DTOs;
 
 namespace CpPrinting.Api.Controllers
@@ -13,12 +14,14 @@ namespace CpPrinting.Api.Controllers
     public class QcController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly ActivityLogger _logger;
 
         private static readonly string[] AllowedStatuses = { "Pending", "Passed", "Failed" };
 
-        public QcController(AppDbContext context)
+        public QcController(AppDbContext context, ActivityLogger logger)
         {
             _context = context;
+            _logger = logger;
         }
 
         // ==========================================
@@ -151,6 +154,9 @@ namespace CpPrinting.Api.Controllers
             _context.CpiReports.Add(report);
             await _context.SaveChangesAsync();
 
+            await _logger.Log(User, HttpContext, "Create", "CPI", report.Id,
+                $"Created CPI report for {report.StyleNo} — Status: {report.InspectionStatus}");
+
             return CreatedAtAction(nameof(GetCPIReports), new { id = report.Id }, report);
         }
 
@@ -212,6 +218,9 @@ namespace CpPrinting.Api.Controllers
 
             await _context.SaveChangesAsync();
 
+            await _logger.Log(User, HttpContext, "Update", "CPI", id,
+                $"Updated CPI for {existing.StyleNo} — Status: {existing.InspectionStatus}");
+
             return NoContent();
         }
 
@@ -237,6 +246,9 @@ namespace CpPrinting.Api.Controllers
 
             _context.CpiReports.Remove(report);
             await _context.SaveChangesAsync();
+
+            await _logger.Log(User, HttpContext, "Delete", "CPI", id,
+                $"Deleted CPI report for {report.StyleNo}");
 
             return NoContent();
         }

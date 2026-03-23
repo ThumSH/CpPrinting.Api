@@ -165,3 +165,4 @@ D:\CpPrinting.Api\obj\Debug\net9.0\CpPrinting.Api.genruntimeconfig.cache
 D:\CpPrinting.Api\obj\Debug\net9.0\ref\CpPrinting.Api.dll
 D:\CpPrinting.Api\obj\Debug\net9.0\CpPrinting.Api.sourcelink.json
 D:\CpPrinting.Api\bin\Debug\net9.0\BCrypt.Net-Next.dll
+D:\CpPrinting.Api\bin\Debug\net9.0\appsettings.Example.json

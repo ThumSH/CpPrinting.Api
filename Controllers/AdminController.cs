@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
 using CpPrinting.Api.Data;
 using CpPrinting.Api.Models;
+using CpPrinting.Api.Services;
 
 namespace CpPrinting.Api.Controllers
 {
@@ -12,10 +13,12 @@ namespace CpPrinting.Api.Controllers
     public class AdminController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly ActivityLogger _logger;
 
-        public AdminController(AppDbContext context)
+        public AdminController(AppDbContext context, ActivityLogger logger)
         {
             _context = context;
+            _logger = logger;
         }
 
         // GET: api/admin/approvals
@@ -51,6 +54,13 @@ namespace CpPrinting.Api.Controllers
             approval.CustomerName = submission.CustomerName;
             approval.Level = submission.Level;
             approval.RevisionNo = submission.RevisionNo;
+
+            // Validate BulkOrderQty if approving
+            if (approval.Status == "Approved")
+            {
+                if (string.IsNullOrWhiteSpace(approval.BulkOrderQty) || !int.TryParse(approval.BulkOrderQty.Trim(), out var bqCheck) || bqCheck <= 0)
+                    return BadRequest("Bulk Order Qty must be a valid positive number.");
+            }
 
             var existing = await _context.Approvals
                 .FirstOrDefaultAsync(a => a.SubmissionId == approval.SubmissionId);
@@ -96,6 +106,10 @@ namespace CpPrinting.Api.Controllers
                 _context.Entry(existing).State = EntityState.Modified;
                 await _context.SaveChangesAsync();
 
+                await _logger.Log(User, HttpContext, "Update", "Approval", existing.Id,
+                    $"{existing.Status} style {existing.StyleNo} for {existing.CustomerName}" +
+                    (existing.Status == "Approved" ? $" — Bulk: {existing.BulkOrderQty}" : ""));
+
                 return Ok(existing);
             }
             else
@@ -115,6 +129,10 @@ namespace CpPrinting.Api.Controllers
 
                 _context.Approvals.Add(approval);
                 await _context.SaveChangesAsync();
+
+                await _logger.Log(User, HttpContext, "Create", "Approval", approval.Id,
+                    $"{approval.Status} style {approval.StyleNo} for {approval.CustomerName}" +
+                    (approval.Status == "Approved" ? $" — Bulk: {approval.BulkOrderQty}" : ""));
 
                 return Ok(approval);
             }
@@ -147,6 +165,9 @@ namespace CpPrinting.Api.Controllers
 
             _context.Approvals.Remove(approval);
             await _context.SaveChangesAsync();
+
+            await _logger.Log(User, HttpContext, "Delete", "Approval", id,
+                $"Deleted approval for {approval.StyleNo} ({approval.CustomerName})");
 
             return NoContent();
         }
