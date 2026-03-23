@@ -33,6 +33,7 @@ namespace CpPrinting.Api.DTOs
 
     public class DeliveryTrackerSummaryDto
     {
+        public string StoreInRecordId { get; set; } = string.Empty;
         public string StyleNo { get; set; } = string.Empty;
         public string FpoNo { get; set; } = string.Empty;      // Schedule No
         public string CustomerName { get; set; } = string.Empty;

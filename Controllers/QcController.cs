@@ -176,6 +176,16 @@ namespace CpPrinting.Api.Controllers
                 return BadRequest("Linked Store-In record not found.");
 
             // Update editable fields
+            // Guard: cannot revoke "Passed" status if production records already exist
+            if (existing.InspectionStatus == "Passed" && report.InspectionStatus != "Passed")
+            {
+                var hasProduction = await _context.StoreProductionRecords
+                    .AnyAsync(p => p.StoreInRecordId == existing.StoreInRecordId);
+
+                if (hasProduction)
+                    return BadRequest("Cannot change from Passed: production records already issued based on this QC pass.");
+            }
+
             existing.Date = report.Date;
             existing.CpiQty = report.CpiQty;
             existing.CutInspections = report.CutInspections;
@@ -211,10 +221,47 @@ namespace CpPrinting.Api.Controllers
             var report = await _context.CpiReports.FindAsync(id);
             if (report == null) return NotFound();
 
+            // Block if production records exist for this store-in
+            var hasProduction = await _context.StoreProductionRecords
+                .AnyAsync(p => p.StoreInRecordId == report.StoreInRecordId);
+
+            if (hasProduction)
+                return BadRequest("Cannot delete: production records have been issued based on this QC pass.");
+
+            // Block if advice notes exist
+            var hasAdviceNotes = await _context.AdviceNotes
+                .AnyAsync(a => a.StoreInRecordId == report.StoreInRecordId);
+
+            if (hasAdviceNotes)
+                return BadRequest("Cannot delete: Gatepass advice notes exist for this inspected item.");
+
             _context.CpiReports.Remove(report);
             await _context.SaveChangesAsync();
 
             return NoContent();
+        }
+
+        /// <summary>
+        /// Returns which CPI reports have downstream dependencies.
+        /// </summary>
+        [HttpGet("reports/locks")]
+        public async Task<ActionResult> GetCpiLocks()
+        {
+            var reports = await _context.CpiReports.Select(r => new { r.Id, r.StoreInRecordId }).ToListAsync();
+            var prodStoreInIds = await _context.StoreProductionRecords.Select(p => p.StoreInRecordId).Distinct().ToListAsync();
+            var gateStoreInIds = await _context.AdviceNotes.Select(a => a.StoreInRecordId).Distinct().ToListAsync();
+
+            var locks = reports.ToDictionary(
+                r => r.Id,
+                r => new
+                {
+                    HasProduction = prodStoreInIds.Contains(r.StoreInRecordId),
+                    HasGatepass = gateStoreInIds.Contains(r.StoreInRecordId),
+                    IsLocked = prodStoreInIds.Contains(r.StoreInRecordId) || gateStoreInIds.Contains(r.StoreInRecordId)
+                }
+            );
+
+            return Ok(locks);
         }
     }
 }

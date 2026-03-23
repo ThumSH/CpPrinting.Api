@@ -382,7 +382,28 @@ namespace CpPrinting.Api.Controllers
                 .AnyAsync(p => p.StoreInRecordId == id);
 
             if (hasProductionRecords)
-                return BadRequest("Cannot restructure a Store-In record that already has production issues. Delete the production records first.");
+                return BadRequest("Cannot edit: production records already issued from this store-in.");
+
+            // Block edit if CPI reports exist
+            var hasCpi = await _context.CpiReports
+                .AnyAsync(c => c.StoreInRecordId == id);
+
+            if (hasCpi)
+                return BadRequest("Cannot edit: QC inspection has already been performed on this record.");
+
+            // Block edit if advice notes exist
+            var hasAdviceNotes = await _context.AdviceNotes
+                .AnyAsync(a => a.StoreInRecordId == id);
+
+            if (hasAdviceNotes)
+                return BadRequest("Cannot edit: Gatepass advice notes reference this record.");
+
+            // Block edit if audit records exist
+            var hasAudit = await _context.AuditRecords
+                .AnyAsync(a => a.StoreInRecordId == id);
+
+            if (hasAudit)
+                return BadRequest("Cannot edit: Audit records reference this record.");
 
             // --- Validate the same way as create ---
             if (request.InQty <= 0)
@@ -482,7 +503,21 @@ namespace CpPrinting.Api.Controllers
                 .AnyAsync(c => c.StoreInRecordId == id);
 
             if (hasCpi)
-                return BadRequest("Cannot delete a Store-In record with existing QC reports.");
+                return BadRequest("Cannot delete: QC inspection reports exist for this record.");
+
+            // Block delete if advice notes exist
+            var hasAdviceNotes = await _context.AdviceNotes
+                .AnyAsync(a => a.StoreInRecordId == id);
+
+            if (hasAdviceNotes)
+                return BadRequest("Cannot delete: Gatepass advice notes exist for this record.");
+
+            // Block delete if audit records exist
+            var hasAudit = await _context.AuditRecords
+                .AnyAsync(a => a.StoreInRecordId == id);
+
+            if (hasAudit)
+                return BadRequest("Cannot delete: Audit records exist for this record.");
 
             _context.StoreInRecords.Remove(record); // Cascade deletes cuts + bundles
             await _context.SaveChangesAsync();
@@ -767,6 +802,14 @@ namespace CpPrinting.Api.Controllers
             if (record == null)
                 return NotFound();
 
+            // Block if advice notes reference this production record
+            var hasAdviceNotes = await _context.AdviceNotes
+                .AnyAsync(a => a.ProductionRecordId.Contains(id) ||
+                               a.StoreInRecordId == record.StoreInRecordId);
+
+            if (hasAdviceNotes)
+                return BadRequest("Cannot delete: Gatepass advice notes have been dispatched from this production record.");
+
             // Restore available qty
             var storeIn = await _context.StoreInRecords
                 .FirstOrDefaultAsync(r => r.Id == record.StoreInRecordId);
@@ -777,6 +820,62 @@ namespace CpPrinting.Api.Controllers
             _context.StoreProductionRecords.Remove(record);
             await _context.SaveChangesAsync();
             return NoContent();
+        }
+
+        // ==========================================
+        // DEPENDENCY CHECKS — lightweight lookups for frontend lock indicators
+        // ==========================================
+
+        /// <summary>
+        /// Returns which store-in records have downstream dependencies (CPI, production, gatepass, audit).
+        /// Frontend uses this to show lock icons on records that can't be edited/deleted.
+        /// </summary>
+        [HttpGet("store-in/locks")]
+        public async Task<ActionResult> GetStoreInLocks()
+        {
+            var storeInIds = await _context.StoreInRecords.Select(s => s.Id).ToListAsync();
+
+            var cpiIds = await _context.CpiReports.Select(c => c.StoreInRecordId).Distinct().ToListAsync();
+            var prodIds = await _context.StoreProductionRecords.Select(p => p.StoreInRecordId).Distinct().ToListAsync();
+            var gateIds = await _context.AdviceNotes.Select(a => a.StoreInRecordId).Distinct().ToListAsync();
+            var auditIds = await _context.AuditRecords.Select(a => a.StoreInRecordId).Distinct().ToListAsync();
+
+            var locks = storeInIds.ToDictionary(
+                id => id,
+                id => new
+                {
+                    HasCpi = cpiIds.Contains(id),
+                    HasProduction = prodIds.Contains(id),
+                    HasGatepass = gateIds.Contains(id),
+                    HasAudit = auditIds.Contains(id),
+                    IsLocked = cpiIds.Contains(id) || prodIds.Contains(id) || gateIds.Contains(id) || auditIds.Contains(id)
+                }
+            );
+
+            return Ok(locks);
+        }
+
+        /// <summary>
+        /// Returns which production records have downstream dependencies (gatepass advice notes).
+        /// </summary>
+        [HttpGet("production/locks")]
+        public async Task<ActionResult> GetProductionLocks()
+        {
+            var prodIds = await _context.StoreProductionRecords.Select(p => p.Id).ToListAsync();
+
+            // Advice notes may have comma-separated production IDs
+            var allAdviceNotes = await _context.AdviceNotes.Select(a => a.ProductionRecordId).ToListAsync();
+            var gatepassProdIds = allAdviceNotes
+                .SelectMany(p => (p ?? "").Split(',').Select(x => x.Trim()))
+                .Where(x => !string.IsNullOrEmpty(x))
+                .ToHashSet();
+
+            var locks = prodIds.ToDictionary(
+                id => id,
+                id => new { IsLocked = gatepassProdIds.Contains(id) }
+            );
+
+            return Ok(locks);
         }
     }
 }

@@ -197,17 +197,24 @@ namespace CpPrinting.Api.Controllers
             if (existing == null)
                 return NotFound();
 
-            var productionRecord = await _context.StoreProductionRecords
-                .FirstOrDefaultAsync(p => p.Id == existing.ProductionRecordId);
+            // Validate dispatch qty against all production records for this store-in
+            var storeIn = await _context.StoreInRecords
+                .FirstOrDefaultAsync(s => s.Id == existing.StoreInRecordId);
 
-            if (productionRecord == null)
-                return BadRequest("Linked Production record not found.");
+            if (storeIn == null)
+                return BadRequest("Linked Store-In record not found.");
+
+            var productionRecords = await _context.StoreProductionRecords
+                .Where(p => p.StoreInRecordId == existing.StoreInRecordId)
+                .ToListAsync();
+
+            var totalIssued = productionRecords.Sum(p => p.IssueQty);
 
             var totalDispatchedExcludingCurrent = await _context.AdviceNotes
-                .Where(n => n.ProductionRecordId == existing.ProductionRecordId && n.Id != id)
+                .Where(n => n.StoreInRecordId == existing.StoreInRecordId && n.Id != id)
                 .SumAsync(n => n.DispatchQty);
 
-            var remainingDispatchQty = Math.Max(0, productionRecord.IssueQty - totalDispatchedExcludingCurrent);
+            var remainingDispatchQty = Math.Max(0, totalIssued - totalDispatchedExcludingCurrent);
 
             if (note.DispatchQty > remainingDispatchQty)
                 return BadRequest($"DispatchQty exceeds remaining dispatchable qty ({remainingDispatchQty}).");
@@ -223,12 +230,14 @@ namespace CpPrinting.Api.Controllers
             existing.ReceivedByName = note.ReceivedByName;
             existing.PrepByName = note.PrepByName;
             existing.AuthByName = note.AuthByName;
+            existing.Remarks = note.Remarks;
 
-            // Re-apply backend truth
-            existing.StyleNo = productionRecord.StyleNo ?? string.Empty;
-            existing.CustomerName = productionRecord.CustomerName ?? string.Empty;
-            existing.CutNo = productionRecord.CutNo ?? string.Empty;
-            existing.Component = productionRecord.Components ?? string.Empty;
+            // Re-apply backend truth from store-in
+            existing.StyleNo = storeIn.StyleNo ?? string.Empty;
+            existing.CustomerName = storeIn.CustomerName ?? string.Empty;
+            existing.ScheduleNo = storeIn.ScheduleNo;
+            existing.Component = storeIn.Components ?? string.Empty;
+            existing.CutNo = string.Join(", ", productionRecords.Select(p => p.CutNo).Distinct());
 
             await _context.SaveChangesAsync();
 

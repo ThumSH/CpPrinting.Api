@@ -1,0 +1,29 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.DotSettings
+
+## Sensitive config — NEVER push these
+appsettings.json
+appsettings.Development.json
+
+## Certificates
+*.pfx
+*.key
+*.pem
+
+## Database files
+*.mdf
+*.ldf
+*.db
+
+## OS junk
+Thumbs.db
+.DS_Store
+
+## IDE
+.idea/
+*.swp

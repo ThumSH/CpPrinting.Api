@@ -29,7 +29,6 @@ namespace CpPrinting.Api.Controllers
         }
 
         // POST: api/admin/approvals
-        // Update if exists, insert if new
         [HttpPost("approvals")]
         public async Task<ActionResult<ApprovalRecord>> ProcessApproval(ApprovalRecord approval)
         {
@@ -45,7 +44,6 @@ namespace CpPrinting.Api.Controllers
             if (submission == null)
                 return BadRequest("Linked submission not found.");
 
-            // IMPORTANT: only latest revision can be approved/edited
             if (!submission.IsLatestRevision)
                 return BadRequest("Older revision approvals are locked. Only the latest revision can be processed.");
 
@@ -59,6 +57,31 @@ namespace CpPrinting.Api.Controllers
 
             if (existing != null)
             {
+                // GUARD: If existing was "Approved" and new status is not "Approved",
+                // check if any store-in records exist for this submission
+                if (existing.Status == "Approved" && approval.Status != "Approved")
+                {
+                    var hasStoreIn = await _context.StoreInRecords
+                        .AnyAsync(s => s.SubmissionId == approval.SubmissionId);
+
+                    if (hasStoreIn)
+                        return BadRequest("Cannot revoke approval: Store-In records already exist for this style. " +
+                                          "Delete all store-in records first before changing the approval status.");
+                }
+
+                // GUARD: If reducing bulk qty, ensure it doesn't go below what's already received
+                if (approval.Status == "Approved" && existing.Status == "Approved" &&
+                    !string.IsNullOrWhiteSpace(approval.BulkOrderQty))
+                {
+                    var newBulk = int.TryParse(approval.BulkOrderQty, out var nb) ? nb : 0;
+                    var totalInQty = await _context.StoreInRecords
+                        .Where(s => s.SubmissionId == approval.SubmissionId)
+                        .SumAsync(s => s.InQty);
+
+                    if (newBulk < totalInQty)
+                        return BadRequest($"Cannot reduce bulk qty to {newBulk}: already received {totalInQty} in Store-In.");
+                }
+
                 existing.Status = approval.Status;
                 existing.BoardSet = approval.Status == "Approved" ? approval.BoardSet : null;
                 existing.ApprovalCard = approval.Status == "Approved" ? approval.ApprovalCard : null;
@@ -113,6 +136,14 @@ namespace CpPrinting.Api.Controllers
 
             if (!submission.IsLatestRevision)
                 return BadRequest("Older revision approvals are locked and cannot be deleted.");
+
+            // GUARD: Block deletion if store-in records exist
+            var hasStoreIn = await _context.StoreInRecords
+                .AnyAsync(s => s.SubmissionId == approval.SubmissionId);
+
+            if (hasStoreIn)
+                return BadRequest("Cannot delete approval: Store-In records already exist for this style. " +
+                                  "Delete all store-in records first.");
 
             _context.Approvals.Remove(approval);
             await _context.SaveChangesAsync();

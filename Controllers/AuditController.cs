@@ -12,7 +12,7 @@ namespace CpPrinting.Api.Controllers
     public class AuditController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private static readonly string[] AllowedStatuses = { "Pending", "Pass", "Fail" };
+        private static readonly string[] AllowedStatuses = { "Pass", "Fail" };
 
         public AuditController(AppDbContext context)
         {
@@ -79,7 +79,14 @@ namespace CpPrinting.Api.Controllers
                     return BadRequest("StoreInRecordId is required.");
 
                 if (!AllowedStatuses.Contains(record.Status))
-                    return BadRequest($"Invalid Status '{record.Status}'.");
+                    return BadRequest($"Invalid Status '{record.Status}'. Allowed: Pass, Fail.");
+
+                // Block duplicate: same store-in + cut already audited
+                var alreadyAudited = await _context.AuditRecords
+                    .AnyAsync(a => a.StoreInRecordId == record.StoreInRecordId && a.CutNo == record.CutNo);
+
+                if (alreadyAudited)
+                    return BadRequest($"Cut '{record.CutNo}' has already been audited for this store-in record.");
 
                 var storeIn = await _context.StoreInRecords
                     .FirstOrDefaultAsync(s => s.Id == record.StoreInRecordId);

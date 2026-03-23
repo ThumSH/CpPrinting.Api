@@ -177,6 +177,7 @@ namespace CpPrinting.Api.Controllers
 
                 summaries.Add(new DeliveryTrackerSummaryDto
                 {
+                    StoreInRecordId = storeIn.Id,
                     StyleNo = storeIn.StyleNo ?? string.Empty,
                     FpoNo = storeIn.ScheduleNo,
                     CustomerName = storeIn.CustomerName ?? string.Empty,
@@ -198,6 +199,80 @@ namespace CpPrinting.Api.Controllers
             }
 
             return Ok(summaries);
+        }
+
+        // ==========================================
+        // SAVED TRACKER REPORTS
+        // ==========================================
+
+        /// <summary>
+        /// Get all saved delivery tracker reports.
+        /// </summary>
+        [HttpGet("saved")]
+        public async Task<ActionResult<IEnumerable<DeliveryTrackerReport>>> GetSavedReports()
+        {
+            return await _context.DeliveryTrackers
+                .OrderByDescending(r => r.CreatedAt)
+                .ToListAsync();
+        }
+
+        /// <summary>
+        /// Save a delivery tracker report snapshot to the database.
+        /// </summary>
+        [HttpPost("save")]
+        public async Task<ActionResult<DeliveryTrackerReport>> SaveTrackerReport(DeliveryTrackerReport report)
+        {
+            if (string.IsNullOrWhiteSpace(report.StoreInRecordId))
+                return BadRequest("StoreInRecordId is required.");
+
+            if (string.IsNullOrWhiteSpace(report.StyleNo))
+                return BadRequest("StyleNo is required.");
+
+            // Check if a saved report already exists for this store-in
+            var existing = await _context.DeliveryTrackers
+                .FirstOrDefaultAsync(r => r.StoreInRecordId == report.StoreInRecordId
+                                         && r.FpoNo == report.FpoNo);
+
+            if (existing != null)
+            {
+                // Update existing report
+                existing.OrderQty = report.OrderQty;
+                existing.DeliveryQty = report.DeliveryQty;
+                existing.BalanceQty = report.BalanceQty;
+                existing.DeliveryStatus = report.DeliveryStatus;
+                existing.Rows = report.Rows;
+                existing.CreatedAt = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm");
+
+                await _context.SaveChangesAsync();
+                return Ok(existing);
+            }
+            else
+            {
+                // Create new
+                if (string.IsNullOrWhiteSpace(report.Id))
+                    report.Id = Guid.NewGuid().ToString();
+
+                report.CreatedAt = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm");
+
+                _context.DeliveryTrackers.Add(report);
+                await _context.SaveChangesAsync();
+
+                return CreatedAtAction(nameof(GetSavedReports), new { id = report.Id }, report);
+            }
+        }
+
+        /// <summary>
+        /// Delete a saved delivery tracker report.
+        /// </summary>
+        [HttpDelete("saved/{id}")]
+        public async Task<IActionResult> DeleteSavedReport(string id)
+        {
+            var report = await _context.DeliveryTrackers.FindAsync(id);
+            if (report == null) return NotFound();
+
+            _context.DeliveryTrackers.Remove(report);
+            await _context.SaveChangesAsync();
+            return NoContent();
         }
 
         // Helper: sort sizes in standard order
