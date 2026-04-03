@@ -26,6 +26,7 @@ namespace CpPrinting.Api.Data
         public DbSet<DowntimeRecord> DowntimeRecords { get; set; }
 
         public DbSet<ActivityLog> ActivityLogs { get; set; }
+        public DbSet<Operator> Operators { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

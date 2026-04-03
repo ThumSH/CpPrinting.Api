@@ -25,6 +25,10 @@ namespace CpPrinting.Api.Services
             var userRole = user.FindFirst(ClaimTypes.Role)?.Value ?? "unknown";
             var ip = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
+                var operatorName = httpContext.Request.Headers["X-Operator-Name"].FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(operatorName))
+                 userName = $"{operatorName} ({userName})";
+
             var log = new ActivityLog
             {
                 UserId = userId,
