@@ -253,6 +253,9 @@ namespace CpPrinting.Api.Controllers
             if (string.IsNullOrWhiteSpace(request.ScheduleNo))
                 return BadRequest("ScheduleNo is required.");
 
+            if (string.IsNullOrWhiteSpace(request.CutInDate))
+                return BadRequest("Cut In Date is required.");
+
             if (request.InQty <= 0)
                 return BadRequest("InQty must be greater than zero.");
 
@@ -277,6 +280,14 @@ namespace CpPrinting.Api.Controllers
 
             var approvedBulk = int.TryParse(approval.BulkOrderQty, out var bulkQty) ? bulkQty : 0;
 
+            // --- Check duplicate schedule number for same submission ---
+            var scheduleDuplicate = await _context.StoreInRecords
+                .AnyAsync(r => r.SubmissionId == request.SubmissionId &&
+                              r.ScheduleNo.ToLower() == request.ScheduleNo.Trim().ToLower());
+
+            if (scheduleDuplicate)
+                return BadRequest($"Schedule No '{request.ScheduleNo}' already exists for this style. Each store-in entry must have a unique schedule number.");
+
             // --- Check global bulk balance ---
             var existingTotalIn = await GetTotalInQtyForSubmission(request.SubmissionId);
             var remainingBulk = Math.Max(0, approvedBulk - existingTotalIn);
@@ -289,6 +300,11 @@ namespace CpPrinting.Api.Controllers
             var totalCutQty = request.Cuts.Sum(c => c.CutQty);
             if (totalCutQty > request.InQty)
                 return BadRequest($"Total cut qty ({totalCutQty}) exceeds IN qty ({request.InQty}).");
+
+            // Check for duplicate cut numbers within the request
+            var cutNos = request.Cuts.Select(c => c.CutNo.Trim().ToLower()).ToList();
+            if (cutNos.Count != cutNos.Distinct().Count())
+                return BadRequest("Duplicate cut numbers found. Each cut must have a unique number.");
 
             foreach (var cut in request.Cuts)
             {
@@ -304,6 +320,11 @@ namespace CpPrinting.Api.Controllers
                 var totalBundleQty = cut.Bundles.Sum(b => b.BundleQty);
                 if (totalBundleQty > cut.CutQty)
                     return BadRequest($"Cut '{cut.CutNo}': total bundle qty ({totalBundleQty}) exceeds cut qty ({cut.CutQty}).");
+
+                // Check for duplicate bundle numbers within a cut
+                var bundleNos = cut.Bundles.Select(b => b.BundleNo.Trim().ToLower()).ToList();
+                if (bundleNos.Count != bundleNos.Distinct().Count())
+                    return BadRequest($"Cut '{cut.CutNo}': duplicate bundle numbers found. Each bundle must have a unique number.");
 
                 foreach (var bundle in cut.Bundles)
                 {
@@ -412,6 +433,9 @@ namespace CpPrinting.Api.Controllers
                 return BadRequest("Cannot edit: Audit records reference this record.");
 
             // --- Validate the same way as create ---
+            if (string.IsNullOrWhiteSpace(request.CutInDate))
+                return BadRequest("Cut In Date is required.");
+
             if (request.InQty <= 0)
                 return BadRequest("InQty must be greater than zero.");
 
@@ -423,6 +447,18 @@ namespace CpPrinting.Api.Controllers
 
             var approvedBulk = (approval != null && int.TryParse(approval.BulkOrderQty, out var bq)) ? bq : 0;
 
+            // --- Check duplicate schedule number for same submission (exclude self) ---
+            if (!string.IsNullOrWhiteSpace(request.ScheduleNo))
+            {
+                var scheduleDuplicate = await _context.StoreInRecords
+                    .AnyAsync(r => r.SubmissionId == existing.SubmissionId &&
+                                  r.Id != id &&
+                                  r.ScheduleNo.ToLower() == request.ScheduleNo.Trim().ToLower());
+
+                if (scheduleDuplicate)
+                    return BadRequest($"Schedule No '{request.ScheduleNo}' already exists for this style. Each store-in entry must have a unique schedule number.");
+            }
+
             // Exclude current record from the total to allow resizing
             var existingTotalIn = await GetTotalInQtyForSubmission(existing.SubmissionId, excludeStoreInId: id);
             var remainingBulk = Math.Max(0, approvedBulk - existingTotalIn);
@@ -433,6 +469,11 @@ namespace CpPrinting.Api.Controllers
             var totalCutQty = request.Cuts.Sum(c => c.CutQty);
             if (totalCutQty > request.InQty)
                 return BadRequest($"Total cut qty ({totalCutQty}) exceeds IN qty ({request.InQty}).");
+
+            // Check for duplicate cut numbers within the request
+            var cutNos = request.Cuts.Select(c => c.CutNo.Trim().ToLower()).ToList();
+            if (cutNos.Count != cutNos.Distinct().Count())
+                return BadRequest("Duplicate cut numbers found. Each cut must have a unique number.");
 
             // Validate each cut and bundle
             foreach (var cut in request.Cuts)
@@ -447,6 +488,21 @@ namespace CpPrinting.Api.Controllers
                 var totalBundleQty = cut.Bundles.Sum(b => b.BundleQty);
                 if (totalBundleQty > cut.CutQty)
                     return BadRequest($"Cut '{cut.CutNo}': total bundle qty ({totalBundleQty}) exceeds cut qty ({cut.CutQty}).");
+
+                // Check for duplicate bundle numbers within a cut
+                var bundleNos = cut.Bundles.Select(b => b.BundleNo.Trim().ToLower()).ToList();
+                if (bundleNos.Count != bundleNos.Distinct().Count())
+                    return BadRequest($"Cut '{cut.CutNo}': duplicate bundle numbers found. Each bundle must have a unique number.");
+
+                foreach (var bundle in cut.Bundles)
+                {
+                    if (string.IsNullOrWhiteSpace(bundle.BundleNo))
+                        return BadRequest($"Cut '{cut.CutNo}': every bundle must have a BundleNo.");
+                    if (bundle.BundleQty <= 0)
+                        return BadRequest($"Cut '{cut.CutNo}', Bundle '{bundle.BundleNo}': BundleQty must be > 0.");
+                    if (string.IsNullOrWhiteSpace(bundle.Size))
+                        return BadRequest($"Cut '{cut.CutNo}', Bundle '{bundle.BundleNo}': Size is required.");
+                }
             }
 
             // --- Remove old children and replace ---

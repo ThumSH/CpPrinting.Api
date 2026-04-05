@@ -21,32 +21,49 @@ namespace CpPrinting.Api.Controllers
             _logger = logger;
         }
 
+        /// <summary>
+        /// Returns styles that have been issued to production.
+        /// OrderQty = IssueQty from the production record (NOT the bulk qty).
+        /// Each production record is a separate selectable item for the worker.
+        /// </summary>
         [HttpGet("eligible-styles")]
         public async Task<ActionResult> GetEligibleStyles()
         {
-            var storeInRecords = await _context.StoreInRecords
-                .OrderByDescending(s => s.CutInDate)
+            var productionRecords = await _context.StoreProductionRecords
+                .OrderByDescending(p => p.IssueDate)
                 .ToListAsync();
 
-            var approvals = await _context.Approvals.ToListAsync();
+            if (!productionRecords.Any())
+                return Ok(Array.Empty<object>());
 
-            var result = storeInRecords.Select(s =>
+            // Get store-in records for schedule/colour info
+            var storeInIds = productionRecords.Select(p => p.StoreInRecordId).Distinct().ToList();
+            var storeInRecords = await _context.StoreInRecords
+                .Where(s => storeInIds.Contains(s.Id))
+                .ToListAsync();
+
+            var storeInMap = storeInRecords.ToDictionary(s => s.Id);
+
+            var result = productionRecords.Select(p =>
             {
-                var approval = approvals.FirstOrDefault(a => a.SubmissionId == s.SubmissionId);
-                var bulkQty = (approval != null && int.TryParse(approval.BulkOrderQty, out var bq)) ? bq : 0;
+                storeInMap.TryGetValue(p.StoreInRecordId, out var storeIn);
 
                 return new
                 {
-                    s.Id,
-                    s.SubmissionId,
-                    StyleNo = s.StyleNo ?? string.Empty,
-                    CustomerName = s.CustomerName ?? string.Empty,
-                    ScheduleNo = s.ScheduleNo,
-                    Components = s.Components ?? string.Empty,
-                    BodyColour = s.BodyColour ?? string.Empty,
-                    OrderQty = bulkQty
+                    p.Id,                                          // Production record ID (used as selection key)
+                    StoreInRecordId = p.StoreInRecordId,           // For linking DailyOutputRecord
+                    p.SubmissionId,
+                    StyleNo = p.StyleNo ?? string.Empty,
+                    CustomerName = p.CustomerName ?? string.Empty,
+                    ScheduleNo = storeIn?.ScheduleNo ?? string.Empty,
+                    Components = p.Components ?? storeIn?.Components ?? string.Empty,
+                    BodyColour = storeIn?.BodyColour ?? string.Empty,
+                    CutNo = p.CutNo ?? string.Empty,
+                    LineNo = p.LineNo ?? string.Empty,
+                    IssueDate = p.IssueDate ?? string.Empty,
+                    OrderQty = p.IssueQty,                         // IssueQty IS the order qty for workers
                 };
-            });
+            }).ToList();
 
             return Ok(result);
         }
@@ -74,12 +91,25 @@ namespace CpPrinting.Api.Controllers
             if (storeIn == null)
                 return BadRequest("Linked Store-In record not found.");
 
+            // Validate that production records exist for this store-in
+            var productionRecords = await _context.StoreProductionRecords
+                .Where(p => p.StoreInRecordId == record.StoreInRecordId)
+                .ToListAsync();
+
+            if (!productionRecords.Any())
+                return BadRequest("No production records found for this Store-In. Items must be issued to production before worker output can be logged.");
+
             if (string.IsNullOrWhiteSpace(record.Id))
                 record.Id = Guid.NewGuid().ToString();
 
+            // Backend source of truth
             record.SubmissionId = storeIn.SubmissionId;
             record.StyleNo = storeIn.StyleNo ?? string.Empty;
             record.CustomerName = storeIn.CustomerName ?? string.Empty;
+
+            // OrderQty from production if not provided
+            if (record.OrderQty <= 0)
+                record.OrderQty = productionRecords.Sum(p => p.IssueQty);
 
             // Calculate totals from time slots
             record.TotalSeating = record.TimeSlots?.Sum(t => t.Seating) ?? 0;
@@ -118,10 +148,22 @@ namespace CpPrinting.Api.Controllers
                 if (storeIn == null)
                     return BadRequest("Linked Store-In record not found.");
 
+                // Validate production exists
+                var productionRecords = await _context.StoreProductionRecords
+                    .Where(p => p.StoreInRecordId == record.StoreInRecordId)
+                    .ToListAsync();
+
+                if (!productionRecords.Any())
+                    return BadRequest($"No production records for Store-In '{storeIn.StyleNo}'. Items must be issued to production first.");
+
                 record.Id = Guid.NewGuid().ToString();
                 record.SubmissionId = storeIn.SubmissionId;
                 record.StyleNo = storeIn.StyleNo ?? string.Empty;
                 record.CustomerName = storeIn.CustomerName ?? string.Empty;
+
+                // Set OrderQty from production if not provided
+                if (record.OrderQty <= 0)
+                    record.OrderQty = productionRecords.Sum(p => p.IssueQty);
 
                 record.TotalSeating = record.TimeSlots?.Sum(t => t.Seating) ?? 0;
                 record.TotalPrinting = record.TimeSlots?.Sum(t => t.Printing) ?? 0;
