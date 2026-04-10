@@ -643,11 +643,16 @@ namespace CpPrinting.Api.Controllers
                         .Where(p => p.CutNo == c.CutNo)
                         .Sum(p => p.IssueQty);
 
+                    // Pull the Part locked in by the CPI inspection for this specific cut
+                    var cpiCut = cpi.CutInspections?.FirstOrDefault(ci => ci.CutNo == c.CutNo);
+                    var cutPart = cpiCut?.Part ?? string.Empty;
+
                     return new ProductionCutDto
                     {
                         CutRecordId = c.Id,
                         CutNo = c.CutNo,
                         CutQty = c.CutQty,
+                        Part = cutPart,
                         AlreadyIssued = alreadyIssued,
                         AvailableQty = Math.Max(0, c.CutQty - alreadyIssued)
                     };
@@ -690,69 +695,69 @@ namespace CpPrinting.Api.Controllers
         public async Task<ActionResult<IEnumerable<StoreProductionRecord>>> BatchCreateProductionRecords(
             [FromBody] List<StoreProductionRecord> records)
         {
-            if (records == null || records.Count == 0)
-                return BadRequest("At least one production record is required.");
+            if (records == null || !records.Any())
+                return BadRequest("No production records provided.");
 
-            var saved = new List<StoreProductionRecord>();
+            var createdRecords = new List<StoreProductionRecord>();
 
             foreach (var record in records)
             {
                 if (string.IsNullOrWhiteSpace(record.StoreInRecordId))
-                    return BadRequest("StoreInRecordId is required for all records.");
-
-                if (record.IssueQty <= 0)
-                    return BadRequest($"IssueQty must be > 0 for cut '{record.CutNo}'.");
+                    return BadRequest("StoreInRecordId is required for all production records.");
 
                 var storeIn = await _context.StoreInRecords
-                    .Include(s => s.Cuts)
                     .FirstOrDefaultAsync(r => r.Id == record.StoreInRecordId);
-
+                
                 if (storeIn == null)
-                    return BadRequest("Linked Store-In record not found.");
+                    return BadRequest($"Store-In record not found for ID: {record.StoreInRecordId}");
 
-                // QC gate
-                var cpi = await _context.CpiReports
+                // Fetch CPI Report WITHOUT using .Include(r => r.CutInspections) since it is a JSON column
+                var cpiReport = await _context.CpiReports
                     .FirstOrDefaultAsync(r => r.StoreInRecordId == record.StoreInRecordId);
 
-                if (cpi == null || cpi.InspectionStatus != "Passed")
-                    return BadRequest("Only QC-passed items can move to Production.");
+                if (cpiReport == null)
+                    return BadRequest($"CPI Report not found for Store-In ID: {record.StoreInRecordId}. Items must pass CPI first.");
 
-                // Find the cut and check availability
-                var cut = storeIn.Cuts.FirstOrDefault(c => c.CutNo == record.CutNo);
-                if (cut == null)
-                    return BadRequest($"Cut '{record.CutNo}' not found in Store-In record.");
+                if (cpiReport.InspectionStatus != "Passed" && cpiReport.InspectionStatus != "Pending")
+                {
+                    return BadRequest($"Cannot issue to production. CPI status is '{cpiReport.InspectionStatus}'.");
+                }
 
-                var alreadyIssued = await _context.StoreProductionRecords
+                // Check how much has already been issued for this specific CutNo
+                var previouslyIssued = await _context.StoreProductionRecords
                     .Where(p => p.StoreInRecordId == record.StoreInRecordId && p.CutNo == record.CutNo)
                     .SumAsync(p => p.IssueQty);
 
-                var cutAvailable = Math.Max(0, cut.CutQty - alreadyIssued);
+                // Fetch the original Cut record to check available qty
+                var cutRecord = await _context.CutRecords
+                    .FirstOrDefaultAsync(c => c.StoreInRecordId == record.StoreInRecordId && c.CutNo == record.CutNo);
 
-                if (record.IssueQty > cutAvailable)
-                    return BadRequest($"Cut '{record.CutNo}': IssueQty ({record.IssueQty}) exceeds available ({cutAvailable}).");
+                var maxAllowed = cutRecord?.CutQty ?? 0;
+
+                if (previouslyIssued + record.IssueQty > maxAllowed)
+                {
+                    return BadRequest($"Cannot issue {record.IssueQty} for Cut {record.CutNo}. Only {maxAllowed - previouslyIssued} remaining.");
+                }
 
                 record.Id = Guid.NewGuid().ToString();
                 record.SubmissionId = storeIn.SubmissionId;
                 record.RevisionNo = storeIn.RevisionNo;
+                record.IssueDate = DateTime.Now.ToString("yyyy-MM-dd");
                 record.StyleNo = storeIn.StyleNo;
                 record.CustomerName = storeIn.CustomerName;
-                record.Components = storeIn.Components;
-                record.BalanceQty = Math.Max(0, cutAvailable - record.IssueQty);
-
-                // Deduct from store-in available
-                storeIn.AvailableQty = Math.Max(0, storeIn.AvailableQty - record.IssueQty);
+                record.BalanceQty = record.IssueQty; // Initial balance is the issue qty
 
                 _context.StoreProductionRecords.Add(record);
-                saved.Add(record);
+                createdRecords.Add(record);
             }
 
             await _context.SaveChangesAsync();
 
-            var totalIssued = saved.Sum(r => r.IssueQty);
-            await _logger.Log(User, HttpContext, "Create", "Production", string.Join(",", saved.Select(r => r.Id)),
-                $"Issued {totalIssued} pcs to production — {saved.Count} record(s) for {saved.FirstOrDefault()?.StyleNo}");
+            await _logger.Log(User, HttpContext, "Create", "Production", 
+                string.Join(",", createdRecords.Select(r => r.Id)), 
+                $"Batch issued {createdRecords.Count} records to production.");
 
-            return Ok(saved);
+            return Ok(createdRecords);
         }
 
         // ==========================================
@@ -807,8 +812,17 @@ namespace CpPrinting.Api.Controllers
             record.RevisionNo = storeIn.RevisionNo;
             record.StyleNo = storeIn.StyleNo;
             record.CustomerName = storeIn.CustomerName;
-            record.Components = storeIn.Components;
-            record.CutNo = storeIn.Cuts?.FirstOrDefault()?.CutNo ?? "N/A";
+
+            // Look up the Part from CPI for this specific cut — that becomes the Component
+            var storeInCpi = await _context.CpiReports
+                .Include(r => r.CutInspections)
+                .FirstOrDefaultAsync(r => r.StoreInRecordId == record.StoreInRecordId);
+            var cutNoToUse = !string.IsNullOrWhiteSpace(record.CutNo) ? record.CutNo : (storeIn.Cuts?.FirstOrDefault()?.CutNo ?? "N/A");
+            var cpiCutForSingle = storeInCpi?.CutInspections?.FirstOrDefault(ci => ci.CutNo == cutNoToUse);
+            // Preserve component sent from frontend (from CPI Part); fallback to CPI lookup; last fallback storeIn.Components
+            if (string.IsNullOrWhiteSpace(record.Components))
+                record.Components = cpiCutForSingle?.Part ?? storeIn.Components;
+            record.CutNo = cutNoToUse;
             record.BalanceQty = Math.Max(0, storeIn.AvailableQty - record.IssueQty);
 
             // Deduct from shelf
