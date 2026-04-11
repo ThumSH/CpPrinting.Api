@@ -12,6 +12,13 @@ namespace CpPrinting.Api.DTOs
     {
         public string CutNo { get; set; } = string.Empty;
         public int CutQty { get; set; }
+
+        /// <summary>
+        /// The component (Part) locked in by the CPI inspection for this specific cut.
+        /// Flows from CPI → Production → Gatepass.
+        /// </summary>
+        public string Part { get; set; } = string.Empty;
+
         public List<GatepassBundleDto> Bundles { get; set; } = new();
     }
 

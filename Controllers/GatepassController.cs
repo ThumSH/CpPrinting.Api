@@ -49,6 +49,13 @@ namespace CpPrinting.Api.Controllers
                 .Where(s => storeInIds.Contains(s.Id))
                 .ToListAsync();
 
+            // Load CPI reports so we can pull the Part chosen for each cut.
+            // Note: CutInspections is a JSON column — no .Include() needed; it deserializes automatically.
+            var cpiReports = await _context.CpiReports
+                .Where(r => storeInIds.Contains(r.StoreInRecordId))
+                .ToListAsync();
+            var cpiByStoreIn = cpiReports.ToDictionary(r => r.StoreInRecordId);
+
             // Group by store-in record — one eligible item per style/schedule
             var eligible = storeInRecords.Select(storeIn =>
             {
@@ -88,17 +95,26 @@ namespace CpPrinting.Api.Controllers
                     BodyColour = storeIn.BodyColour ?? string.Empty,
                     PrintColour = storeIn.PrintColour ?? string.Empty,
                     Season = storeIn.Season ?? string.Empty,
-                    Cuts = storeIn.Cuts?.Select(c => new GatepassCutDto
+                    Cuts = storeIn.Cuts?.Select(c =>
                     {
-                        CutNo = c.CutNo,
-                        CutQty = c.CutQty,
-                        Bundles = c.Bundles?.Select(b => new GatepassBundleDto
+                        // Look up the Part chosen by QC for this specific cut
+                        cpiByStoreIn.TryGetValue(storeIn.Id, out var cpiForStoreIn);
+                        var cpiCut = cpiForStoreIn?.CutInspections?.FirstOrDefault(ci => ci.CutNo == c.CutNo);
+                        var cutPart = cpiCut?.Part ?? string.Empty;
+
+                        return new GatepassCutDto
                         {
-                            BundleNo = b.BundleNo,
-                            BundleQty = b.BundleQty,
-                            Size = b.Size,
-                            NumberRange = b.NumberRange ?? string.Empty
-                        }).ToList() ?? new()
+                            CutNo = c.CutNo,
+                            CutQty = c.CutQty,
+                            Part = cutPart,
+                            Bundles = c.Bundles?.Select(b => new GatepassBundleDto
+                            {
+                                BundleNo = b.BundleNo,
+                                BundleQty = b.BundleQty,
+                                Size = b.Size,
+                                NumberRange = b.NumberRange ?? string.Empty
+                            }).ToList() ?? new()
+                        };
                     }).ToList() ?? new()
                 };
             })

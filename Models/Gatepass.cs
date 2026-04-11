@@ -9,6 +9,13 @@ namespace CpPrinting.Api.Models
         public string BundleNo { get; set; } = string.Empty;
         public string Size { get; set; } = string.Empty;
         public string CutForm { get; set; } = string.Empty;
+
+        /// <summary>
+        /// The component (Part) chosen by QC for this cut. Stored per row so it
+        /// shows in the dispatch table and stays linked even if multiple cuts mix.
+        /// </summary>
+        public string Component { get; set; } = string.Empty;
+
         public int TotalPcs { get; set; }
         public int Pd { get; set; }
         public int Fd { get; set; }
