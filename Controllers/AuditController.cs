@@ -84,12 +84,37 @@ namespace CpPrinting.Api.Controllers
                 if (!AllowedStatuses.Contains(record.Status))
                     return BadRequest($"Invalid Status '{record.Status}'. Allowed: Pass, Fail.");
 
-                // Block duplicate: same store-in + cut already audited
-                var alreadyAudited = await _context.AuditRecords
-                    .AnyAsync(a => a.StoreInRecordId == record.StoreInRecordId && a.CutNo == record.CutNo);
+                // Block duplicate at the BUNDLE level only.
+                // A cut can be audited multiple times. Each individual bundle can only be
+                // audited once per (storeIn, cut). This matches the frontend, which allows
+                // partial-cut audits when leftovers can form valid AQL ranges.
+                var existingForCut = await _context.AuditRecords
+                    .Where(a => a.StoreInRecordId == record.StoreInRecordId && a.CutNo == record.CutNo)
+                    .ToListAsync();
 
-                if (alreadyAudited)
-                    return BadRequest($"Cut '{record.CutNo}' has already been audited for this store-in record.");
+                if (existingForCut.Count > 0)
+                {
+                    var alreadyAuditedBundleNos = new HashSet<string>();
+                    foreach (var ar in existingForCut)
+                    {
+                        if (ar.Bundles == null) continue;
+                        foreach (var b in ar.Bundles)
+                        {
+                            alreadyAuditedBundleNos.Add(b.BundleNo);
+                        }
+                    }
+
+                    var requestedBundles = record.Bundles ?? new List<AuditBundleSelection>();
+                    var conflicts = new List<string>();
+                    foreach (var rb in requestedBundles)
+                    {
+                        if (alreadyAuditedBundleNos.Contains(rb.BundleNo))
+                            conflicts.Add(rb.BundleNo);
+                    }
+
+                    if (conflicts.Count > 0)
+                        return BadRequest($"Bundle(s) [{string.Join(", ", conflicts)}] of Cut '{record.CutNo}' have already been audited.");
+                }
 
                 var storeIn = await _context.StoreInRecords
                     .FirstOrDefaultAsync(s => s.Id == record.StoreInRecordId);
