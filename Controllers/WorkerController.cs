@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using CpPrinting.Api.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using CpPrinting.Api.Data;
 using CpPrinting.Api.Models;
@@ -58,11 +59,13 @@ namespace CpPrinting.Api.Controllers
                 })
                 .ToListAsync();
 
+            // Each stage column counts independently — a worker who puts 10 at Seating AND 10 at Checking has handled 20 pieces.
+            // Total completed = sum of all 6 stage columns across every DailyOutputRecord for the production record.
             var completedByProduction = dailyOutputs
                 .GroupBy(d => d.ProductionRecordId)
                 .ToDictionary(
                     g => g.Key,
-                    g => g.Sum(x => new[] { x.TotalSeating, x.TotalPrinting, x.TotalCuring, x.TotalChecking, x.TotalPacking, x.TotalDispatch }.Max())
+                    g => g.Sum(x => x.TotalSeating + x.TotalPrinting + x.TotalCuring + x.TotalChecking + x.TotalPacking + x.TotalDispatch)
                 );
 
             var result = productionRecords.Select(p =>
@@ -112,11 +115,65 @@ namespace CpPrinting.Api.Controllers
         }
 
         [HttpGet("daily-output")]
-        public async Task<ActionResult<IEnumerable<DailyOutputRecord>>> GetDailyOutputRecords()
+        public async Task<ActionResult> GetDailyOutputRecords(
+            [FromQuery] bool paginated = false,
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 50,
+            [FromQuery] string? search = null,
+            [FromQuery] string? styleNo = null,
+            [FromQuery] string? customerName = null,
+            [FromQuery] string? cutNo = null,
+            [FromQuery] string? component = null,
+            [FromQuery] string? workerName = null,
+            [FromQuery] string? tableNo = null,
+            [FromQuery] string? dateFrom = null,
+            [FromQuery] string? dateTo = null)
         {
-            return await _context.DailyOutputRecords
-                .OrderByDescending(r => r.Date)
-                .ToListAsync();
+            var query = _context.DailyOutputRecords.AsQueryable();
+
+            // Free-text search across common fields
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var s = search.Trim().ToLower();
+                query = query.Where(r =>
+                    (r.StyleNo != null && r.StyleNo.ToLower().Contains(s)) ||
+                    (r.CustomerName != null && r.CustomerName.ToLower().Contains(s)) ||
+                    (r.CutNo != null && r.CutNo.ToLower().Contains(s)) ||
+                    (r.WorkerName != null && r.WorkerName.ToLower().Contains(s)) ||
+                    (r.TableNo != null && r.TableNo.ToLower().Contains(s)) ||
+                    (r.Component != null && r.Component.ToLower().Contains(s)));
+            }
+
+            // Exact-match filters
+            if (!string.IsNullOrWhiteSpace(styleNo))      query = query.Where(r => r.StyleNo == styleNo);
+            if (!string.IsNullOrWhiteSpace(customerName)) query = query.Where(r => r.CustomerName == customerName);
+            if (!string.IsNullOrWhiteSpace(cutNo))        query = query.Where(r => r.CutNo == cutNo);
+            if (!string.IsNullOrWhiteSpace(component))    query = query.Where(r => r.Component == component);
+            if (!string.IsNullOrWhiteSpace(workerName))   query = query.Where(r => r.WorkerName == workerName);
+            if (!string.IsNullOrWhiteSpace(tableNo))      query = query.Where(r => r.TableNo == tableNo);
+
+            // Date range (Date is "yyyy-MM-dd" string — lex comparison works)
+            if (!string.IsNullOrWhiteSpace(dateFrom))
+                query = query.Where(r => r.Date != null && string.Compare(r.Date, dateFrom) >= 0);
+            if (!string.IsNullOrWhiteSpace(dateTo))
+                query = query.Where(r => r.Date != null && string.Compare(r.Date, dateTo) <= 0);
+
+            query = query.OrderByDescending(r => r.Date);
+
+            if (!paginated)
+                return Ok(await query.ToListAsync());
+
+            if (page < 1) page = 1;
+            if (pageSize < 1 || pageSize > 200) pageSize = 50;
+
+            var total = await query.CountAsync();
+            var items = await query.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+
+            return Ok(new PaginatedResponseDto<DailyOutputRecord>
+            {
+                Items = items, Total = total, Page = page, PageSize = pageSize,
+                TotalPages = (int)Math.Ceiling((double)total / pageSize)
+            });
         }
 
         [HttpPost("daily-output")]
@@ -171,8 +228,9 @@ namespace CpPrinting.Api.Controllers
                 .Select(d => new { d.TotalSeating, d.TotalPrinting, d.TotalCuring, d.TotalChecking, d.TotalPacking, d.TotalDispatch })
                 .ToListAsync();
 
-            var existingCompleted = existingOutputs.Sum(x => new[] { x.TotalSeating, x.TotalPrinting, x.TotalCuring, x.TotalChecking, x.TotalPacking, x.TotalDispatch }.Max());
-            var newCompleted = new[] { record.TotalSeating, record.TotalPrinting, record.TotalCuring, record.TotalChecking, record.TotalPacking, record.TotalDispatch }.Max();
+            // Every column counts independently — sum all 6 to get the true 'pieces handled' total.
+            var existingCompleted = existingOutputs.Sum(x => x.TotalSeating + x.TotalPrinting + x.TotalCuring + x.TotalChecking + x.TotalPacking + x.TotalDispatch);
+            var newCompleted = record.TotalSeating + record.TotalPrinting + record.TotalCuring + record.TotalChecking + record.TotalPacking + record.TotalDispatch;
 
             if (existingCompleted + newCompleted > productionRecord.IssueQty)
                 return BadRequest($"Total completed ({existingCompleted + newCompleted}) would exceed production issue qty ({productionRecord.IssueQty}).");
@@ -282,8 +340,9 @@ namespace CpPrinting.Api.Controllers
                 .Select(d => new { d.TotalSeating, d.TotalPrinting, d.TotalCuring, d.TotalChecking, d.TotalPacking, d.TotalDispatch })
                 .ToListAsync();
 
-            var otherCompleted = otherOutputs.Sum(x => new[] { x.TotalSeating, x.TotalPrinting, x.TotalCuring, x.TotalChecking, x.TotalPacking, x.TotalDispatch }.Max());
-            var newCompleted = new[] { existing.TotalSeating, existing.TotalPrinting, existing.TotalCuring, existing.TotalChecking, existing.TotalPacking, existing.TotalDispatch }.Max();
+            // Every column counts independently — sum all 6 for the true 'pieces handled' total.
+            var otherCompleted = otherOutputs.Sum(x => x.TotalSeating + x.TotalPrinting + x.TotalCuring + x.TotalChecking + x.TotalPacking + x.TotalDispatch);
+            var newCompleted = existing.TotalSeating + existing.TotalPrinting + existing.TotalCuring + existing.TotalChecking + existing.TotalPacking + existing.TotalDispatch;
 
             if (otherCompleted + newCompleted > productionRecord.IssueQty)
                 return BadRequest($"Total completed ({otherCompleted + newCompleted}) would exceed production issue qty ({productionRecord.IssueQty}).");
