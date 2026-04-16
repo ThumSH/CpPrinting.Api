@@ -25,13 +25,23 @@ namespace CpPrinting.Api.Controllers
         /// Each row = one Advice Note dispatched against production records for that store-in.
         /// </summary>
         [HttpGet("report")]
-        public async Task<ActionResult<IEnumerable<DeliveryTrackerSummaryDto>>> GetDeliveryTrackerReport()
+        public async Task<ActionResult<IEnumerable<DeliveryTrackerSummaryDto>>> GetDeliveryTrackerReport(
+            [FromQuery] string? styleNo = null,
+            [FromQuery] string? scheduleNo = null,
+            [FromQuery] int? limit = null)
         {
-            // Load all store-in records with cuts and bundles
-            var storeInRecords = await _context.StoreInRecords
+            // Build filtered store-in query based on params
+            var siQuery = _context.StoreInRecords
                 .Include(s => s.Cuts)
                     .ThenInclude(c => c.Bundles)
-                .ToListAsync();
+                .AsQueryable();
+
+            if (!string.IsNullOrWhiteSpace(styleNo))
+                siQuery = siQuery.Where(s => s.StyleNo == styleNo);
+            if (!string.IsNullOrWhiteSpace(scheduleNo))
+                siQuery = siQuery.Where(s => s.ScheduleNo == scheduleNo);
+
+            var storeInRecords = await siQuery.ToListAsync();
 
             // Load all advice notes
             var adviceNotes = await _context.AdviceNotes
@@ -198,6 +208,17 @@ namespace CpPrinting.Api.Controllers
                 });
             }
 
+            // Sort by most recent delivery date across the rows within each summary.
+            // DeliveryDate lives on the Rows, not on the summary itself.
+            summaries = summaries
+                .OrderByDescending(s => s.Rows != null && s.Rows.Count > 0
+                    ? s.Rows.Max(r => r.DeliveryDate ?? "")
+                    : "")
+                .ToList();
+
+            if (limit.HasValue && limit.Value > 0)
+                summaries = summaries.Take(limit.Value).ToList();
+
             return Ok(summaries);
         }
 
@@ -208,6 +229,37 @@ namespace CpPrinting.Api.Controllers
         /// <summary>
         /// Get all saved delivery tracker reports.
         /// </summary>
+        /// <summary>
+        /// Lightweight endpoint — returns distinct styleNo + scheduleNo combinations.
+        /// Used by the dropdowns on the tracker page without loading the full report.
+        /// </summary>
+        [HttpGet("filters")]
+        public async Task<ActionResult> GetTrackerFilters()
+        {
+            // Only include store-ins that have at least one advice note (otherwise no tracker row would exist)
+            var prodMap = await _context.StoreProductionRecords
+                .Select(p => new { p.Id, p.StoreInRecordId })
+                .ToListAsync();
+            var prodIdToStoreIn = prodMap.ToDictionary(p => p.Id, p => p.StoreInRecordId);
+
+            var adviceNotes = await _context.AdviceNotes
+                .Select(a => new { a.ProductionRecordId, a.StyleNo })
+                .ToListAsync();
+
+            var storeInIdsWithDispatch = adviceNotes
+                .Where(a => prodIdToStoreIn.ContainsKey(a.ProductionRecordId))
+                .Select(a => prodIdToStoreIn[a.ProductionRecordId])
+                .ToHashSet();
+
+            var combos = await _context.StoreInRecords
+                .Where(s => storeInIdsWithDispatch.Contains(s.Id))
+                .Select(s => new { StyleNo = s.StyleNo ?? "", ScheduleNo = s.ScheduleNo ?? "" })
+                .Distinct()
+                .ToListAsync();
+
+            return Ok(combos);
+        }
+
         [HttpGet("saved")]
         public async Task<ActionResult<IEnumerable<DeliveryTrackerReport>>> GetSavedReports()
         {
