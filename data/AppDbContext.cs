@@ -27,6 +27,9 @@ namespace CpPrinting.Api.Data
 
         public DbSet<ActivityLog> ActivityLogs { get; set; }
         public DbSet<Operator> Operators { get; set; }
+        public DbSet<ColourMaster> ColourMasters { get; set; }
+
+        public DbSet<SampleStyle> SampleStyles { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

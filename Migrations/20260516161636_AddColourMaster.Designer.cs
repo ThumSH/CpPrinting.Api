@@ -3,6 +3,7 @@ using CpPrinting.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace CpPrinting.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260516161636_AddColourMaster")]
+    partial class AddColourMaster
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -721,107 +724,6 @@ namespace CpPrinting.Api.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("Operators");
-                });
-
-            modelBuilder.Entity("CpPrinting.Api.Models.SampleStyle", b =>
-                {
-                    b.Property<string>("Id")
-                        .HasColumnType("nvarchar(450)");
-
-                    b.Property<string>("AcNumber")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("AdminActionAt")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("AdminActionBy")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("AdminRemarks")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("AdminStatus")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("BoardSet")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("BodyColour")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("BulkQty")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<bool>("ClientApproved")
-                        .HasColumnType("bit");
-
-                    b.Property<string>("ClientApprovedAt")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("ClientApprovedBy")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("CreatedAt")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("Customer")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("DevelopmentJobId")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("ImagePath")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("Placements")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("PrintColour")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("PrintColourQty")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("PrintingTechnique")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("RcMeetingDate")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("Season")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("StyleNo")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("SubmittedAt")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<bool>("SubmittedToAdmin")
-                        .HasColumnType("bit");
-
-                    b.Property<string>("UpdatedAt")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("WashingStandard")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("SampleStyles");
                 });
 
             modelBuilder.Entity("CpPrinting.Api.Models.StoreInRecord", b =>
