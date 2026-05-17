@@ -3,7 +3,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
 using CpPrinting.Api.Data;
 using CpPrinting.Api.Models;
-using System.Security.Claims;
 
 namespace CpPrinting.Api.Controllers
 {
@@ -13,13 +12,54 @@ namespace CpPrinting.Api.Controllers
     public class DevelopmentController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly IWebHostEnvironment _env;
 
-        public DevelopmentController(AppDbContext context)
+        private static readonly string[] AllowedImageTypes = ["image/jpeg", "image/png", "image/webp"];
+        private const long MaxImageBytes = 10 * 1024 * 1024;
+
+        public DevelopmentController(AppDbContext context, IWebHostEnvironment env)
         {
             _context = context;
+            _env = env;
         }
 
         private string Now => DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm");
+
+        // ==========================================
+        // ARTWORK UPLOAD
+        // POST api/development/artwork
+        // Saves to wwwroot/uploads/artworks/ — returns the server URL path.
+        // Called from frontend BEFORE submitting the job form so we get a
+        // real persistent URL instead of a blob:// that dies on reload.
+        // ==========================================
+
+        [Authorize(Roles = "Developer,Admin")]
+        [HttpPost("artwork")]
+        [RequestSizeLimit(10_485_760)]
+        public async Task<ActionResult> UploadArtwork(IFormFile file)
+        {
+            if (file == null || file.Length == 0)
+                return BadRequest("No file uploaded.");
+
+            if (file.Length > MaxImageBytes)
+                return BadRequest("File exceeds 10 MB limit.");
+
+            if (!AllowedImageTypes.Contains(file.ContentType.ToLower()))
+                return BadRequest("Only JPEG, PNG, and WebP images are allowed.");
+
+            var uploadsDir = Path.Combine(_env.WebRootPath, "uploads", "artworks");
+            Directory.CreateDirectory(uploadsDir);
+
+            var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+            var fileName = $"artwork_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}{ext}";
+            var filePath = Path.Combine(uploadsDir, fileName);
+
+            using (var stream = System.IO.File.Create(filePath))
+                await file.CopyToAsync(stream);
+
+            // Return the relative URL — frontend prefixes with API.BASE
+            return Ok(new { url = $"/uploads/artworks/{fileName}" });
+        }
 
         // ==========================================
         // WORKSPACE JOBS ENDPOINTS
@@ -34,7 +74,8 @@ namespace CpPrinting.Api.Controllers
         }
 
         /// <summary>
-        /// Creates a DevelopmentJob AND automatically creates a linked SampleStyle.
+        /// Creates a DevelopmentJob AND a linked SampleStyle.
+        /// ArtworkPreviewUrl must be a server path from POST /artwork (not a blob URL).
         /// Returns: { job, sampleStyle }
         /// </summary>
         [Authorize(Roles = "Developer,Admin")]
@@ -46,7 +87,6 @@ namespace CpPrinting.Api.Controllers
 
             _context.DevelopmentJobs.Add(job);
 
-            // Auto-create a linked SampleStyle
             var sampleStyle = new SampleStyle
             {
                 Id = Guid.NewGuid().ToString(),
@@ -60,6 +100,8 @@ namespace CpPrinting.Api.Controllers
                 PrintColourQty = job.PrintColourQty,
                 WashingStandard = job.WashingStandard,
                 Placements = job.Placements != null ? string.Join(",", job.Placements) : string.Empty,
+                // Artwork URL flows directly into SampleStyle.ImagePath
+                ImagePath = !string.IsNullOrWhiteSpace(job.ArtworkPreviewUrl) ? job.ArtworkPreviewUrl : null,
                 ClientApproved = false,
                 SubmittedToAdmin = false,
                 AdminStatus = "Pending",
@@ -73,10 +115,6 @@ namespace CpPrinting.Api.Controllers
             return CreatedAtAction(nameof(GetJobs), new { id = job.Id }, new { job, sampleStyle });
         }
 
-        /// <summary>
-        /// Updates the DevelopmentJob. Also syncs key fields to the linked
-        /// SampleStyle if it hasn't been submitted to admin yet.
-        /// </summary>
         [Authorize(Roles = "Developer,Admin")]
         [HttpPut("jobs/{id}")]
         public async Task<IActionResult> UpdateJob(string id, DevelopmentJob job)
@@ -86,7 +124,6 @@ namespace CpPrinting.Api.Controllers
 
             _context.Entry(job).State = EntityState.Modified;
 
-            // Sync fields back to unsubmitted SampleStyle
             var linked = await _context.SampleStyles
                 .FirstOrDefaultAsync(s => s.DevelopmentJobId == id && !s.SubmittedToAdmin);
 
@@ -101,37 +138,28 @@ namespace CpPrinting.Api.Controllers
                 linked.PrintColourQty = job.PrintColourQty;
                 linked.WashingStandard = job.WashingStandard;
                 linked.Placements = job.Placements != null ? string.Join(",", job.Placements) : string.Empty;
+                if (!string.IsNullOrWhiteSpace(job.ArtworkPreviewUrl))
+                    linked.ImagePath = job.ArtworkPreviewUrl;
                 linked.UpdatedAt = Now;
             }
 
-            try
-            {
-                await _context.SaveChangesAsync();
-            }
+            try { await _context.SaveChangesAsync(); }
             catch (DbUpdateConcurrencyException)
             {
-                if (!JobExists(id))
-                    return NotFound();
-                else
-                    throw;
+                if (!JobExists(id)) return NotFound();
+                throw;
             }
 
             return NoContent();
         }
 
-        /// <summary>
-        /// Deletes a job and its unsubmitted SampleStyle (if any).
-        /// Submitted SampleStyles are kept — they're part of the admin record.
-        /// </summary>
         [Authorize(Roles = "Developer,Admin")]
         [HttpDelete("jobs/{id}")]
         public async Task<IActionResult> DeleteJob(string id)
         {
             var job = await _context.DevelopmentJobs.FindAsync(id);
-            if (job == null)
-                return NotFound();
+            if (job == null) return NotFound();
 
-            // Remove unsubmitted sample styles linked to this job
             var linkedStyles = await _context.SampleStyles
                 .Where(s => s.DevelopmentJobId == id && !s.SubmittedToAdmin)
                 .ToListAsync();
@@ -144,7 +172,7 @@ namespace CpPrinting.Api.Controllers
         }
 
         // ==========================================
-        // SUBMISSIONS ENDPOINTS — unchanged from original
+        // SUBMISSIONS ENDPOINTS — unchanged
         // ==========================================
 
         [HttpGet("submissions")]
@@ -162,19 +190,14 @@ namespace CpPrinting.Api.Controllers
         {
             if (string.IsNullOrWhiteSpace(submission.StyleNo))
                 return BadRequest("Style No is required.");
-
             if (string.IsNullOrWhiteSpace(submission.CustomerName))
                 return BadRequest("Customer Name is required.");
-
             if (string.IsNullOrWhiteSpace(submission.SubmissionDate))
                 return BadRequest("Submission Date is required.");
-
             if (string.IsNullOrWhiteSpace(submission.Level))
                 return BadRequest("Level is required.");
-
             if (string.IsNullOrWhiteSpace(submission.Comment))
                 return BadRequest("Comment is required.");
-
             if (string.IsNullOrWhiteSpace(submission.Id))
                 submission.Id = Guid.NewGuid().ToString();
 
@@ -188,9 +211,7 @@ namespace CpPrinting.Api.Controllers
                 old.IsLatestRevision = false;
 
             submission.RevisionNo = matchingSubmissions.Any()
-                ? matchingSubmissions.Max(s => s.RevisionNo) + 1
-                : 1;
-
+                ? matchingSubmissions.Max(s => s.RevisionNo) + 1 : 1;
             submission.IsLatestRevision = true;
 
             _context.Submissions.Add(submission);
@@ -204,8 +225,7 @@ namespace CpPrinting.Api.Controllers
         public async Task<IActionResult> DeleteSubmission(string id)
         {
             var submission = await _context.Submissions.FindAsync(id);
-            if (submission == null)
-                return NotFound();
+            if (submission == null) return NotFound();
 
             bool wasLatest = submission.IsLatestRevision;
             string styleNo = submission.StyleNo;
@@ -216,18 +236,14 @@ namespace CpPrinting.Api.Controllers
 
             if (wasLatest)
             {
-                var previousRevision = await _context.Submissions
+                var prev = await _context.Submissions
                     .Where(s =>
                         s.StyleNo.ToLower() == styleNo.ToLower() &&
                         s.CustomerName.ToLower() == customerName.ToLower())
                     .OrderByDescending(s => s.RevisionNo)
                     .FirstOrDefaultAsync();
 
-                if (previousRevision != null)
-                {
-                    previousRevision.IsLatestRevision = true;
-                    await _context.SaveChangesAsync();
-                }
+                if (prev != null) { prev.IsLatestRevision = true; await _context.SaveChangesAsync(); }
             }
 
             return NoContent();

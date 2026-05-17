@@ -6,17 +6,14 @@ using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// 1. Add services to the container.
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 
-// Register the Database Context
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 builder.Services.AddScoped<CpPrinting.Api.Services.ActivityLogger>();
 
-// 2. Configure CORS for LAN Access
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("LanCorsPolicy", policy =>
@@ -25,7 +22,6 @@ builder.Services.AddCors(options =>
     });
 });
 
-// 3. Configure JWT Authentication
 var jwtSettings = builder.Configuration.GetSection("JwtSettings");
 var secretKey = Encoding.UTF8.GetBytes(jwtSettings["SecretKey"]!);
 
@@ -48,14 +44,19 @@ builder.Services.AddAuthentication(options =>
     };
 });
 
+// Ensure upload directories exist on startup
+var wwwroot = Path.Combine(builder.Environment.ContentRootPath, "wwwroot");
+Directory.CreateDirectory(Path.Combine(wwwroot, "uploads", "samples"));
+Directory.CreateDirectory(Path.Combine(wwwroot, "uploads", "artworks"));
+
 var app = builder.Build();
-
-
 
 app.UseCors("LanCorsPolicy");
 
-// 4. CRITICAL: UseAuthentication must come BEFORE UseAuthorization
-app.UseAuthentication(); 
+// Serve wwwroot — required for artwork and sample images
+app.UseStaticFiles();
+
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();

@@ -16,9 +16,8 @@ namespace CpPrinting.Api.Controllers
         private readonly AppDbContext _context;
         private readonly IWebHostEnvironment _env;
 
-        // Images are saved under wwwroot/uploads/samples/
         private static readonly string[] AllowedImageTypes = ["image/jpeg", "image/png", "image/webp"];
-        private const long MaxImageBytes = 10 * 1024 * 1024; // 10 MB
+        private const long MaxImageBytes = 10 * 1024 * 1024;
 
         public SampleStyleController(AppDbContext context, IWebHostEnvironment env)
         {
@@ -26,20 +25,11 @@ namespace CpPrinting.Api.Controllers
             _env = env;
         }
 
-        private string CurrentUser =>
-            User.FindFirstValue(ClaimTypes.Name) ?? "Unknown";
-
-        private string Now =>
-            DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm");
+        private string CurrentUser => User.FindFirstValue(ClaimTypes.Name) ?? "Unknown";
+        private string Now => DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm");
 
         // ── GET all ───────────────────────────────────────────────────────────
 
-        /// <summary>
-        /// GET api/samplestyle
-        /// Admin  → all records
-        /// Developer → only their own customer/style records (all records for now;
-        ///             filter by username can be added later)
-        /// </summary>
         [HttpGet]
         public async Task<ActionResult<IEnumerable<SampleStyle>>> GetAll(
             [FromQuery] string? customer = null,
@@ -52,29 +42,18 @@ namespace CpPrinting.Api.Controllers
 
             if (!string.IsNullOrWhiteSpace(customer))
                 query = query.Where(s => s.Customer.ToLower().Contains(customer.ToLower()));
-
             if (!string.IsNullOrWhiteSpace(styleNo))
                 query = query.Where(s => s.StyleNo.ToLower().Contains(styleNo.ToLower()));
-
             if (!string.IsNullOrWhiteSpace(adminStatus))
                 query = query.Where(s => s.AdminStatus == adminStatus);
-
             if (clientApproved.HasValue)
                 query = query.Where(s => s.ClientApproved == clientApproved.Value);
-
             if (submittedToAdmin.HasValue)
                 query = query.Where(s => s.SubmittedToAdmin == submittedToAdmin.Value);
 
-            var results = await query
-                .OrderByDescending(s => s.CreatedAt)
-                .ToListAsync();
-
-            return Ok(results);
+            return Ok(await query.OrderByDescending(s => s.CreatedAt).ToListAsync());
         }
 
-        /// <summary>
-        /// GET api/samplestyle/{id}
-        /// </summary>
         [HttpGet("{id}")]
         public async Task<ActionResult<SampleStyle>> GetById(string id)
         {
@@ -83,13 +62,8 @@ namespace CpPrinting.Api.Controllers
             return Ok(style);
         }
 
-        // ── CREATE (called automatically from DevelopmentController) ──────────
+        // ── CREATE ────────────────────────────────────────────────────────────
 
-        /// <summary>
-        /// POST api/samplestyle
-        /// Called internally when a DevelopmentJob is created.
-        /// Developer role required.
-        /// </summary>
         [Authorize(Roles = "Admin,Developer")]
         [HttpPost]
         public async Task<ActionResult<SampleStyle>> Create([FromBody] SampleStyle style)
@@ -103,45 +77,31 @@ namespace CpPrinting.Api.Controllers
 
             _context.SampleStyles.Add(style);
             await _context.SaveChangesAsync();
-
             return Ok(style);
         }
 
         // ── IMAGE UPLOAD ──────────────────────────────────────────────────────
 
-        /// <summary>
-        /// POST api/samplestyle/{id}/image
-        /// Accepts multipart/form-data with a single "file" field.
-        /// Saves to wwwroot/uploads/samples/ and updates ImagePath.
-        /// Developer role required.
-        /// </summary>
         [Authorize(Roles = "Admin,Developer")]
         [HttpPost("{id}/image")]
-        [RequestSizeLimit(10_485_760)] // 10 MB
+        [RequestSizeLimit(10_485_760)]
         public async Task<ActionResult<SampleStyle>> UploadImage(string id, IFormFile file)
         {
             var style = await _context.SampleStyles.FindAsync(id);
             if (style == null) return NotFound();
 
-            if (file == null || file.Length == 0)
-                return BadRequest("No file uploaded.");
-
-            if (file.Length > MaxImageBytes)
-                return BadRequest("File exceeds 10 MB limit.");
-
+            if (file == null || file.Length == 0) return BadRequest("No file uploaded.");
+            if (file.Length > MaxImageBytes) return BadRequest("File exceeds 10 MB limit.");
             if (!AllowedImageTypes.Contains(file.ContentType.ToLower()))
                 return BadRequest("Only JPEG, PNG, and WebP images are allowed.");
 
-            // Build save path
             var uploadsDir = Path.Combine(_env.WebRootPath, "uploads", "samples");
             Directory.CreateDirectory(uploadsDir);
 
-            // Delete old image if one exists
             if (!string.IsNullOrEmpty(style.ImagePath))
             {
                 var oldFile = Path.Combine(_env.WebRootPath, style.ImagePath.TrimStart('/'));
-                if (System.IO.File.Exists(oldFile))
-                    System.IO.File.Delete(oldFile);
+                if (System.IO.File.Exists(oldFile)) System.IO.File.Delete(oldFile);
             }
 
             var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
@@ -149,25 +109,16 @@ namespace CpPrinting.Api.Controllers
             var filePath = Path.Combine(uploadsDir, fileName);
 
             using (var stream = System.IO.File.Create(filePath))
-            {
                 await file.CopyToAsync(stream);
-            }
 
-            // Store as a relative URL the frontend can use directly
             style.ImagePath = $"/uploads/samples/{fileName}";
             style.UpdatedAt = Now;
-
             await _context.SaveChangesAsync();
             return Ok(style);
         }
 
-        // ── DEVELOPER: mark client approved ───────────────────────────────────
+        // ── CLIENT APPROVE ────────────────────────────────────────────────────
 
-        /// <summary>
-        /// PATCH api/samplestyle/{id}/clientapprove
-        /// Developer toggles "Client Approved" status.
-        /// Once true, the style can be submitted to admin.
-        /// </summary>
         [Authorize(Roles = "Admin,Developer")]
         [HttpPatch("{id}/clientapprove")]
         public async Task<ActionResult<SampleStyle>> ToggleClientApprove(string id)
@@ -187,14 +138,8 @@ namespace CpPrinting.Api.Controllers
             return Ok(style);
         }
 
-        // ── DEVELOPER: submit to admin ────────────────────────────────────────
+        // ── SUBMIT TO ADMIN ───────────────────────────────────────────────────
 
-        /// <summary>
-        /// PATCH api/samplestyle/{id}/submit
-        /// Developer fills in RC Meeting Date, AC, Board Set, Bulk Qty
-        /// and submits for admin review. Requires ClientApproved = true.
-        /// Body: { rcMeetingDate, acNumber, boardSet, bulkQty }
-        /// </summary>
         [Authorize(Roles = "Admin,Developer")]
         [HttpPatch("{id}/submit")]
         public async Task<ActionResult<SampleStyle>> SubmitToAdmin(string id, [FromBody] SubmitToAdminDto dto)
@@ -204,13 +149,10 @@ namespace CpPrinting.Api.Controllers
 
             if (!style.ClientApproved)
                 return BadRequest("Style must be client-approved before submitting to admin.");
-
             if (style.SubmittedToAdmin)
                 return BadRequest("Already submitted to admin.");
-
             if (string.IsNullOrWhiteSpace(dto.RcMeetingDate))
                 return BadRequest("RC Meeting Date is required.");
-
             if (string.IsNullOrWhiteSpace(dto.BulkQty))
                 return BadRequest("Bulk Qty is required.");
 
@@ -218,6 +160,7 @@ namespace CpPrinting.Api.Controllers
             style.AcNumber = dto.AcNumber?.Trim();
             style.BoardSet = dto.BoardSet?.Trim();
             style.BulkQty = dto.BulkQty.Trim();
+            style.DeveloperComments = dto.DeveloperComments?.Trim();
             style.SubmittedToAdmin = true;
             style.SubmittedAt = Now;
             style.AdminStatus = "Pending";
@@ -227,13 +170,8 @@ namespace CpPrinting.Api.Controllers
             return Ok(style);
         }
 
-        // ── ADMIN: set approval status ────────────────────────────────────────
+        // ── ADMIN ACTION + BRIDGE ─────────────────────────────────────────────
 
-        /// <summary>
-        /// PATCH api/samplestyle/{id}/adminaction
-        /// Admin sets status to "Approved" or "Pending" (not Rejected — per spec).
-        /// Body: { status: "Approved" | "Pending", remarks?: string }
-        /// </summary>
         [Authorize(Roles = "Admin")]
         [HttpPatch("{id}/adminaction")]
         public async Task<ActionResult<SampleStyle>> AdminAction(string id, [FromBody] AdminActionDto dto)
@@ -254,16 +192,78 @@ namespace CpPrinting.Api.Controllers
             style.AdminActionBy = CurrentUser;
             style.UpdatedAt = Now;
 
+            // ── BRIDGE: sync to Submissions + Approvals ───────────────────────
+            var submission = await _context.Submissions.FirstOrDefaultAsync(s => s.Id == style.Id);
+            if (submission == null)
+            {
+                submission = new SubmissionForm
+                {
+                    Id = style.Id,
+                    StyleNo = style.StyleNo,
+                    CustomerName = style.Customer,
+                    SubmissionDate = style.SubmittedAt ?? Now,
+                    Level = "Sample",
+                    Comment = style.DeveloperComments ?? "Sample style approval",
+                    RevisionNo = 1,
+                    IsLatestRevision = true,
+                };
+                _context.Submissions.Add(submission);
+            }
+
+            var approval = await _context.Approvals.FirstOrDefaultAsync(a => a.SubmissionId == style.Id);
+
+            if (dto.Status == "Approved")
+            {
+                if (approval == null)
+                {
+                    _context.Approvals.Add(new ApprovalRecord
+                    {
+                        Id = Guid.NewGuid().ToString(),
+                        SubmissionId = style.Id,
+                        StyleNo = style.StyleNo,
+                        CustomerName = style.Customer,
+                        Level = "Sample",
+                        RevisionNo = 1,
+                        Status = "Approved",
+                        BoardSet = style.BoardSet,
+                        ApprovalCard = style.AcNumber,
+                        RaMeetingDate = style.RcMeetingDate,
+                        BulkOrderQty = style.BulkQty,
+                        ReviewedAt = Now,
+                    });
+                }
+                else
+                {
+                    approval.Status = "Approved";
+                    approval.BoardSet = style.BoardSet;
+                    approval.ApprovalCard = style.AcNumber;
+                    approval.RaMeetingDate = style.RcMeetingDate;
+                    approval.BulkOrderQty = style.BulkQty;
+                    approval.ReviewedAt = Now;
+                    approval.StyleNo = style.StyleNo;
+                    approval.CustomerName = style.Customer;
+                }
+            }
+            else if (approval != null)
+            {
+                var hasStoreIn = await _context.StoreInRecords.AnyAsync(s => s.SubmissionId == style.Id);
+                if (hasStoreIn)
+                    return BadRequest("Cannot revert to Pending: Store-In records already exist for this style.");
+
+                approval.Status = "Pending";
+                approval.BoardSet = null;
+                approval.ApprovalCard = null;
+                approval.RaMeetingDate = null;
+                approval.BulkOrderQty = null;
+                approval.ReviewedAt = Now;
+            }
+
             await _context.SaveChangesAsync();
             return Ok(style);
         }
 
         // ── DELETE ────────────────────────────────────────────────────────────
 
-        /// <summary>
-        /// DELETE api/samplestyle/{id}
-        /// Admin only — also removes the associated image file.
-        /// </summary>
         [Authorize(Roles = "Admin")]
         [HttpDelete("{id}")]
         public async Task<IActionResult> Delete(string id)
@@ -271,17 +271,14 @@ namespace CpPrinting.Api.Controllers
             var style = await _context.SampleStyles.FindAsync(id);
             if (style == null) return NotFound();
 
-            // Delete image file if present
             if (!string.IsNullOrEmpty(style.ImagePath))
             {
                 var filePath = Path.Combine(_env.WebRootPath, style.ImagePath.TrimStart('/'));
-                if (System.IO.File.Exists(filePath))
-                    System.IO.File.Delete(filePath);
+                if (System.IO.File.Exists(filePath)) System.IO.File.Delete(filePath);
             }
 
             _context.SampleStyles.Remove(style);
             await _context.SaveChangesAsync();
-
             return NoContent();
         }
     }
@@ -294,6 +291,7 @@ namespace CpPrinting.Api.Controllers
         public string? AcNumber { get; set; }
         public string? BoardSet { get; set; }
         public string BulkQty { get; set; } = string.Empty;
+        public string? DeveloperComments { get; set; }
     }
 
     public class AdminActionDto
