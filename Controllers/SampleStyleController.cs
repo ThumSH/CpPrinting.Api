@@ -182,6 +182,12 @@ namespace CpPrinting.Api.Controllers
             if (!style.SubmittedToAdmin)
                 return BadRequest("Style has not been submitted to admin yet.");
 
+
+            // ── LOCK GUARD: once StoreIn records exist, decision is frozen ────────
+            var hasStoreIn = await _context.StoreInRecords
+                .AnyAsync(s => s.SubmissionId == style.Id);
+            if (hasStoreIn)
+                return BadRequest("LOCKED: Store-In records already exist for this style. The approval decision cannot be changed once goods have been received.");
             var allowed = new[] { "Approved", "Pending" };
             if (!allowed.Contains(dto.Status))
                 return BadRequest("Status must be 'Approved' or 'Pending'.");
@@ -246,9 +252,6 @@ namespace CpPrinting.Api.Controllers
             }
             else if (approval != null)
             {
-                var hasStoreIn = await _context.StoreInRecords.AnyAsync(s => s.SubmissionId == style.Id);
-                if (hasStoreIn)
-                    return BadRequest("Cannot revert to Pending: Store-In records already exist for this style.");
 
                 approval.Status = "Pending";
                 approval.BoardSet = null;
