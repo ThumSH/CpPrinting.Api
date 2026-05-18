@@ -15,7 +15,9 @@ namespace CpPrinting.Api.Models
         public string PrintColour { get; set; } = string.Empty;
         public string PrintColourQty { get; set; } = string.Empty;
         public string WashingStandard { get; set; } = string.Empty;
-        public string Placements { get; set; } = string.Empty;
+        // Single component this sample covers: Front, Back, Sleeve, Pocket, Waistband, Other.
+        // Replaces the old Placements field.
+        public string Component { get; set; } = string.Empty;
 
         // ── Artwork image ─────────────────────────────────────────────────────
         public string? ImagePath { get; set; }

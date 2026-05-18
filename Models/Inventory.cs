@@ -82,6 +82,13 @@ namespace CpPrinting.Api.Models
         public string CutNo { get; set; } = string.Empty;
 
         /// <summary>
+        /// Which component-submission this cut belongs to.
+        /// Enables per-component bulk balance tracking.
+        /// Set at StoreIn creation time from the selected component.
+        /// </summary>
+        public string SubmissionId { get; set; } = string.Empty;
+
+        /// <summary>
         /// Qty assigned to this cut. Sum of all cuts under a StoreIn must not exceed InQty.
         /// </summary>
         public int CutQty { get; set; }
