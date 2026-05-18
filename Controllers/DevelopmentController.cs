@@ -99,7 +99,7 @@ namespace CpPrinting.Api.Controllers
                 PrintColour = job.PrintColour,
                 PrintColourQty = job.PrintColourQty,
                 WashingStandard = job.WashingStandard,
-                Placements = job.Placements != null ? string.Join(",", job.Placements) : string.Empty,
+                Component = job.Component ?? string.Empty,
                 // Artwork URL flows directly into SampleStyle.ImagePath
                 ImagePath = !string.IsNullOrWhiteSpace(job.ArtworkPreviewUrl) ? job.ArtworkPreviewUrl : null,
                 ClientApproved = false,
@@ -137,7 +137,7 @@ namespace CpPrinting.Api.Controllers
                 linked.PrintColour = job.PrintColour;
                 linked.PrintColourQty = job.PrintColourQty;
                 linked.WashingStandard = job.WashingStandard;
-                linked.Placements = job.Placements != null ? string.Join(",", job.Placements) : string.Empty;
+                linked.Component = job.Component ?? string.Empty;
                 if (!string.IsNullOrWhiteSpace(job.ArtworkPreviewUrl))
                     linked.ImagePath = job.ArtworkPreviewUrl;
                 linked.UpdatedAt = Now;

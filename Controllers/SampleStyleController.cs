@@ -265,6 +265,98 @@ namespace CpPrinting.Api.Controllers
             return Ok(style);
         }
 
+
+        // ── ADD REVISION ──────────────────────────────────────────────────────
+
+        /// <summary>
+        /// POST api/samplestyle/{id}/revise
+        ///
+        /// Creates a new revision of an existing approved sample style.
+        /// Used when a client increases bulk qty — developer enters the EXTRA qty only.
+        /// The new revision gets its own SubmissionForm + ApprovalRecord when admin approves.
+        /// System sums bulk across ALL approved revisions for the same style+component.
+        ///
+        /// Rules:
+        ///   - Source style must already be admin-approved
+        ///   - Source style must have at least one StoreIn record (otherwise just edit the original)
+        ///   - New revision inherits all fields; only BulkQty and Comments change
+        /// </summary>
+        [Authorize(Roles = "Admin,Developer")]
+        [HttpPost("{id}/revise")]
+        public async Task<ActionResult<SampleStyle>> CreateRevision(string id, [FromBody] ReviseStyleDto dto)
+        {
+            var source = await _context.SampleStyles.FindAsync(id);
+            if (source == null) return NotFound();
+
+            if (source.AdminStatus != "Approved")
+                return BadRequest("Only approved styles can be revised.");
+
+            if (string.IsNullOrWhiteSpace(dto.ExtraBulkQty) ||
+                !int.TryParse(dto.ExtraBulkQty, out var extraQty) || extraQty <= 0)
+                return BadRequest("Extra Bulk Qty must be a positive number.");
+
+            var Now = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm");
+
+            // Count existing revisions for this style+component to set the new revision number
+            var existingCount = await _context.SampleStyles
+                .CountAsync(s => s.StyleNo == source.StyleNo
+                              && s.Customer == source.Customer
+                              && s.Component == source.Component);
+
+            // Build new SampleStyle as revision
+            var newStyle = new SampleStyle
+            {
+                Id                  = Guid.NewGuid().ToString(),
+                DevelopmentJobId    = source.DevelopmentJobId,
+                Customer            = source.Customer,
+                StyleNo             = source.StyleNo,
+                Season              = source.Season,
+                PrintingTechnique   = source.PrintingTechnique,
+                BodyColour          = source.BodyColour,
+                PrintColour         = source.PrintColour,
+                PrintColourQty      = source.PrintColourQty,
+                WashingStandard     = source.WashingStandard,
+                Component           = source.Component,
+                ImagePath           = source.ImagePath,   // reuse artwork
+                // Revision-specific fields
+                BulkQty             = dto.ExtraBulkQty.Trim(),
+                RcMeetingDate       = dto.RcMeetingDate?.Trim() ?? source.RcMeetingDate,
+                AcNumber            = dto.AcNumber?.Trim() ?? source.AcNumber,
+                BoardSet            = dto.BoardSet?.Trim() ?? source.BoardSet,
+                DeveloperComments   = dto.Comments?.Trim(),
+                // Submission state — starts fresh, goes through admin again
+                ClientApproved      = true,  // auto client-approved since style already exists
+                ClientApprovedAt    = Now,
+                ClientApprovedBy    = User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? "System",
+                SubmittedToAdmin    = true,  // goes straight to admin
+                SubmittedAt         = Now,
+                AdminStatus         = "Pending",
+                CreatedAt           = Now,
+                UpdatedAt           = Now,
+            };
+
+            _context.SampleStyles.Add(newStyle);
+
+            // Create the SubmissionForm for this revision immediately
+            // (it needs admin action to create the ApprovalRecord)
+            var revisionNo = existingCount + 1;
+            var submission = new SubmissionForm
+            {
+                Id                = newStyle.Id,
+                StyleNo           = newStyle.StyleNo,
+                CustomerName      = newStyle.Customer,
+                SubmissionDate    = Now,
+                Level             = "Sample",
+                Comment           = $"Revision {revisionNo} — Extra bulk qty: {dto.ExtraBulkQty}",
+                RevisionNo        = revisionNo,
+                IsLatestRevision  = false,  // NOT latest — doesn't replace original
+            };
+            _context.Submissions.Add(submission);
+
+            await _context.SaveChangesAsync();
+            return Ok(newStyle);
+        }
+
         // ── DELETE ────────────────────────────────────────────────────────────
 
         [Authorize(Roles = "Admin")]
@@ -295,6 +387,17 @@ namespace CpPrinting.Api.Controllers
         public string? BoardSet { get; set; }
         public string BulkQty { get; set; } = string.Empty;
         public string? DeveloperComments { get; set; }
+    }
+
+
+    public class ReviseStyleDto
+    {
+        /// <summary>Extra bulk qty only — added on top of existing approved qty.</summary>
+        public string ExtraBulkQty { get; set; } = string.Empty;
+        public string? RcMeetingDate { get; set; }
+        public string? AcNumber { get; set; }
+        public string? BoardSet { get; set; }
+        public string? Comments { get; set; }
     }
 
     public class AdminActionDto

@@ -14,18 +14,17 @@ namespace CpPrinting.Api.Controllers
     {
         private readonly AppDbContext _context;
 
-        // Valid format: "XX-1 — Descriptive Name"
-        // Code: 1-5 uppercase letters, hyphen, 1-2 digits
-        // Separator: exactly " — " (space em-dash space)
-        // Name: starts with a letter, at least 2 chars total after separator
+        // Valid format: "R-1-Bright Red", "N-4-Navy Blue", "GR-10-Grey Melange"
+        // Code: 1-5 uppercase letters, hyphen, 1-2 digits, hyphen, descriptive name
+        
+        
         private static readonly Regex NameFormat = new(
-            @"^[A-Z]{1,5}-\d{1,2} — [A-Za-z][A-Za-z0-9\s\-]{1,49}$",
+            @"^[A-Z]{1,5}-\d{1,2}-[A-Za-z][A-Za-z0-9\s]{1,49}$",
             RegexOptions.Compiled
         );
 
         private const string FORMAT_HINT =
-            "Use the format: CODE — Name  (e.g. \"W-1 — White\", \"GR-2 — Grey Melange\"). " +
-            "Code must be 1-5 uppercase letters, a hyphen, then 1-2 digits.";
+            "Use the format: CODE — Name  (e.g. \"W-1 — White\", \"GR-2 — Grey Melange\"). ";
 
         public ColourMasterController(AppDbContext context)
         {
