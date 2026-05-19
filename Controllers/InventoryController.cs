@@ -313,6 +313,9 @@ namespace CpPrinting.Api.Controllers
             }
 
             // Per-component bulk balance validation
+            // CRITICAL: Must sum ALL approved revisions for the same style+component group,
+            // not just the single submissionId's approval. A style may have multiple revisions
+            // (Rev1=1000 + Rev2=100 = 1100 total) each with their own SubmissionId.
             var cutsBySubmission = request.Cuts
                 .GroupBy(c => c.SubmissionId)
                 .ToDictionary(g => g.Key, g => g.Sum(c => c.CutQty));
@@ -322,18 +325,57 @@ namespace CpPrinting.Api.Controllers
                 var subId     = kvp.Key;
                 var cutQtySum = kvp.Value;
 
-                var approval     = await _context.Approvals.FirstOrDefaultAsync(a => a.SubmissionId == subId);
-                var approvedBulk = (approval != null && int.TryParse(approval.BulkOrderQty, out var bq)) ? bq : 0;
-                var existingUsed = await GetTotalInQtyForSubmission(subId);
-                var remaining    = Math.Max(0, approvedBulk - existingUsed);
+                // Find the SampleStyle for this submission to get style+component identity
+                var thisSample = await _context.SampleStyles.FirstOrDefaultAsync(s => s.Id == subId);
+                var label      = thisSample?.Component ?? subId;
+
+                // Sum ALL approved revisions for the same StyleNo + CustomerName + Component
+                // This is the same grouping logic used in GetEligibleStoreInStyles
+                int totalApprovedBulk = 0;
+                int totalExistingUsed = 0;
+
+                if (thisSample != null)
+                {
+                    // Find all SampleStyles with same style+customer+component
+                    var siblingStyleIds = await _context.SampleStyles
+                        .Where(s => s.StyleNo == thisSample.StyleNo
+                                 && s.Customer == thisSample.Customer
+                                 && s.Component == thisSample.Component)
+                        .Select(s => s.Id)
+                        .ToListAsync();
+
+                    // Sum bulk across all approved revisions in this group
+                    var siblingApprovals = await (
+                        from submission in _context.Submissions
+                        join approval in _context.Approvals
+                            on submission.Id equals approval.SubmissionId
+                        where siblingStyleIds.Contains(submission.Id)
+                              && approval.Status == "Approved"
+                        select approval.BulkOrderQty
+                    ).ToListAsync();
+
+                    totalApprovedBulk = siblingApprovals.Sum(q =>
+                        int.TryParse(q, out var parsed) ? parsed : 0);
+
+                    // Sum all cuts already received across ALL sibling submissions
+                    foreach (var sibId in siblingStyleIds)
+                        totalExistingUsed += await GetTotalInQtyForSubmission(sibId);
+                }
+                else
+                {
+                    // Fallback: check just this submission (old flow without SampleStyle)
+                    var approval = await _context.Approvals.FirstOrDefaultAsync(a => a.SubmissionId == subId);
+                    totalApprovedBulk = (approval != null && int.TryParse(approval.BulkOrderQty, out var bq)) ? bq : 0;
+                    totalExistingUsed = await GetTotalInQtyForSubmission(subId);
+                }
+
+                var remaining = Math.Max(0, totalApprovedBulk - totalExistingUsed);
 
                 if (cutQtySum > remaining)
                 {
-                    var sample = await _context.SampleStyles.FirstOrDefaultAsync(s => s.Id == subId);
-                    var label  = sample?.Component ?? subId;
                     return BadRequest(
                         $"Component '{label}': cut qty ({cutQtySum}) exceeds remaining bulk balance ({remaining}). " +
-                        $"Approved: {approvedBulk}, Already received: {existingUsed}.");
+                        $"Total approved across all revisions: {totalApprovedBulk}, Already received: {totalExistingUsed}.");
                 }
             }
 
@@ -387,13 +429,13 @@ namespace CpPrinting.Api.Controllers
             var season = primarySample?.Season ?? string.Empty;
 
             // For BalanceBulkQty display: sum remaining across all components
-            int totalApprovedBulk = 0;
-            int totalExistingIn   = 0;
+            int displayApprovedBulk = 0;
+            int displayExistingIn   = 0;
             foreach (var subId in submissionIds)
             {
                 var appr = await _context.Approvals.FirstOrDefaultAsync(a => a.SubmissionId == subId);
-                totalApprovedBulk += (appr != null && int.TryParse(appr.BulkOrderQty, out var bq)) ? bq : 0;
-                totalExistingIn   += await GetTotalInQtyForSubmission(subId);
+                displayApprovedBulk += (appr != null && int.TryParse(appr.BulkOrderQty, out var bq)) ? bq : 0;
+                displayExistingIn   += await GetTotalInQtyForSubmission(subId);
             }
 
             var record = new StoreInRecord
@@ -409,9 +451,9 @@ namespace CpPrinting.Api.Controllers
                 Season       = season,
                 ScheduleNo   = request.ScheduleNo,
                 CutInDate    = request.CutInDate,
-                BulkQty      = totalApprovedBulk,
+                BulkQty      = displayApprovedBulk,
                 InQty        = request.InQty,
-                BalanceBulkQty = Math.Max(0, totalApprovedBulk - totalExistingIn - request.InQty),
+                BalanceBulkQty = Math.Max(0, displayApprovedBulk - displayExistingIn - request.InQty),
                 TotalCutQty  = totalCutQty,
                 UncutBalance = Math.Max(0, request.InQty - totalCutQty),
                 AvailableQty = request.InQty,
@@ -479,12 +521,43 @@ namespace CpPrinting.Api.Controllers
             {
                 var subId     = kvp.Key;
                 var cutQtySum = kvp.Value;
-                var approval     = await _context.Approvals.FirstOrDefaultAsync(a => a.SubmissionId == subId);
-                var approvedBulk = (approval != null && int.TryParse(approval.BulkOrderQty, out var bq)) ? bq : 0;
-                var existingUsed = await GetTotalInQtyForSubmission(subId, excludeStoreInId: id);
-                var remaining    = Math.Max(0, approvedBulk - existingUsed);
+
+                // Sum ALL revisions for same style+component group (same fix as CreateStoreInRecord)
+                var thisSample = await _context.SampleStyles.FirstOrDefaultAsync(s => s.Id == subId);
+                int totalApprovedBulk = 0;
+                int totalExistingUsed = 0;
+
+                if (thisSample != null)
+                {
+                    var siblingIds = await _context.SampleStyles
+                        .Where(s => s.StyleNo == thisSample.StyleNo
+                                 && s.Customer == thisSample.Customer
+                                 && s.Component == thisSample.Component)
+                        .Select(s => s.Id).ToListAsync();
+
+                    var siblingApprovals = await (
+                        from submission in _context.Submissions
+                        join approval in _context.Approvals on submission.Id equals approval.SubmissionId
+                        where siblingIds.Contains(submission.Id) && approval.Status == "Approved"
+                        select approval.BulkOrderQty
+                    ).ToListAsync();
+
+                    totalApprovedBulk = siblingApprovals.Sum(q => int.TryParse(q, out var p) ? p : 0);
+                    foreach (var sibId in siblingIds)
+                        totalExistingUsed += await GetTotalInQtyForSubmission(sibId, excludeStoreInId: id);
+                }
+                else
+                {
+                    var approval = await _context.Approvals.FirstOrDefaultAsync(a => a.SubmissionId == subId);
+                    totalApprovedBulk = (approval != null && int.TryParse(approval.BulkOrderQty, out var bq)) ? bq : 0;
+                    totalExistingUsed = await GetTotalInQtyForSubmission(subId, excludeStoreInId: id);
+                }
+
+                var remaining = Math.Max(0, totalApprovedBulk - totalExistingUsed);
                 if (cutQtySum > remaining)
-                    return BadRequest($"Component cut qty ({cutQtySum}) exceeds remaining bulk ({remaining}) for submission {subId}.");
+                    return BadRequest(
+                        $"Component cut qty ({cutQtySum}) exceeds remaining bulk ({remaining}). " +
+                        $"Total approved across all revisions: {totalApprovedBulk}, Already received: {totalExistingUsed}.");
             }
 
             _context.BundleRecords.RemoveRange(existing.Cuts.SelectMany(c => c.Bundles));
@@ -643,11 +716,22 @@ namespace CpPrinting.Api.Controllers
                     return BadRequest($"Cannot issue {record.IssueQty} for Cut {record.CutNo}. Only {maxAllowed - previouslyIssued} remaining.");
                 record.Id = Guid.NewGuid().ToString();
                 record.SubmissionId = storeIn.SubmissionId;
-                record.RevisionNo = storeIn.RevisionNo;
-                record.IssueDate = DateTime.Now.ToString("yyyy-MM-dd");
-                record.StyleNo = storeIn.StyleNo;
+                record.RevisionNo   = storeIn.RevisionNo;
+                record.IssueDate    = DateTime.Now.ToString("yyyy-MM-dd");
+                record.StyleNo      = storeIn.StyleNo;
                 record.CustomerName = storeIn.CustomerName;
-                record.BalanceQty = record.IssueQty;
+                record.BalanceQty   = record.IssueQty;
+
+                // Stamp Components — prefer CPI Part for this cut, fall back to StoreIn.Components
+                if (string.IsNullOrWhiteSpace(record.Components))
+                {
+                    var cpiWithCuts = await _context.CpiReports
+                        .Include(r => r.CutInspections)
+                        .FirstOrDefaultAsync(r => r.StoreInRecordId == record.StoreInRecordId);
+                    var cpiCut = cpiWithCuts?.CutInspections?.FirstOrDefault(ci => ci.CutNo == record.CutNo);
+                    record.Components = cpiCut?.Part ?? storeIn.Components ?? string.Empty;
+                }
+
                 _context.StoreProductionRecords.Add(record);
                 createdRecords.Add(record);
             }
@@ -716,6 +800,36 @@ namespace CpPrinting.Api.Controllers
             storeIn.AvailableQty = existing.BalanceQty;
             await _context.SaveChangesAsync();
             return NoContent();
+        }
+
+        /// <summary>
+        /// Returns all production records for a specific line number.
+        /// Used by the Worker page to show what's allocated to their line.
+        /// </summary>
+        [HttpGet("production/by-line/{lineNo}")]
+        public async Task<ActionResult<IEnumerable<StoreProductionRecord>>> GetProductionByLine(string lineNo)
+        {
+            var records = await _context.StoreProductionRecords
+                .Where(r => r.LineNo == lineNo)
+                .OrderByDescending(r => r.IssueDate)
+                .ToListAsync();
+            return Ok(records);
+        }
+
+        /// <summary>
+        /// Returns distinct line numbers that have production records.
+        /// Used by the Worker page for line selection.
+        /// </summary>
+        [HttpGet("production/lines")]
+        public async Task<ActionResult<IEnumerable<string>>> GetProductionLines()
+        {
+            var lines = await _context.StoreProductionRecords
+                .Where(r => !string.IsNullOrEmpty(r.LineNo))
+                .Select(r => r.LineNo!)
+                .Distinct()
+                .OrderBy(l => l)
+                .ToListAsync();
+            return Ok(lines);
         }
 
         [HttpDelete("production/{id}")]

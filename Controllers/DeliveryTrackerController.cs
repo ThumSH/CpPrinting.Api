@@ -208,8 +208,6 @@ namespace CpPrinting.Api.Controllers
                 });
             }
 
-            // Sort by most recent delivery date across the rows within each summary.
-            // DeliveryDate lives on the Rows, not on the summary itself.
             summaries = summaries
                 .OrderByDescending(s => s.Rows != null && s.Rows.Count > 0
                     ? s.Rows.Max(r => r.DeliveryDate ?? "")
@@ -227,29 +225,43 @@ namespace CpPrinting.Api.Controllers
         // ==========================================
 
         /// <summary>
-        /// Get all saved delivery tracker reports.
-        /// </summary>
-        /// <summary>
         /// Lightweight endpoint — returns distinct styleNo + scheduleNo combinations.
         /// Used by the dropdowns on the tracker page without loading the full report.
         /// </summary>
         [HttpGet("filters")]
         public async Task<ActionResult> GetTrackerFilters()
         {
-            // Only include store-ins that have at least one advice note (otherwise no tracker row would exist)
+            var adviceNotes = await _context.AdviceNotes
+                .Select(a => new { a.StoreInRecordId, a.ProductionRecordId })
+                .ToListAsync();
+
+            var storeInIdsWithDispatch = new HashSet<string>();
+
             var prodMap = await _context.StoreProductionRecords
                 .Select(p => new { p.Id, p.StoreInRecordId })
                 .ToListAsync();
+            
             var prodIdToStoreIn = prodMap.ToDictionary(p => p.Id, p => p.StoreInRecordId);
 
-            var adviceNotes = await _context.AdviceNotes
-                .Select(a => new { a.ProductionRecordId, a.StyleNo })
-                .ToListAsync();
+            foreach (var note in adviceNotes)
+            {
+                var storeInId = note.StoreInRecordId;
+                
+                // Fallback resolver if directly saved StoreInRecordId is missing
+                if (string.IsNullOrEmpty(storeInId) && !string.IsNullOrEmpty(note.ProductionRecordId))
+                {
+                    var firstProdId = note.ProductionRecordId.Split(',').FirstOrDefault()?.Trim();
+                    if (firstProdId != null && prodIdToStoreIn.TryGetValue(firstProdId, out var resolved))
+                    {
+                        storeInId = resolved;
+                    }
+                }
 
-            var storeInIdsWithDispatch = adviceNotes
-                .Where(a => prodIdToStoreIn.ContainsKey(a.ProductionRecordId))
-                .Select(a => prodIdToStoreIn[a.ProductionRecordId])
-                .ToHashSet();
+                if (!string.IsNullOrEmpty(storeInId))
+                {
+                    storeInIdsWithDispatch.Add(storeInId);
+                }
+            }
 
             var combos = await _context.StoreInRecords
                 .Where(s => storeInIdsWithDispatch.Contains(s.Id))

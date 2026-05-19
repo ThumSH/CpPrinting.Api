@@ -38,13 +38,11 @@ namespace CpPrinting.Api.Controllers
                 .ToListAsync();
             var storeInMap = storeInRecords.ToDictionary(s => s.Id);
 
-            // Load CPI reports so we can look up the Part per cut when a production record's Component is missing
             var cpiReports = await _context.CpiReports
                 .Where(r => storeInIds.Contains(r.StoreInRecordId))
                 .ToListAsync();
             var cpiByStoreIn = cpiReports.ToDictionary(r => r.StoreInRecordId);
 
-            // NEW LOGIC: Calculate 'Completed' based on the highest value of ANY process column
             var dailyOutputs = await _context.DailyOutputRecords
                 .Where(d => !string.IsNullOrWhiteSpace(d.ProductionRecordId))
                 .Select(d => new
@@ -59,8 +57,7 @@ namespace CpPrinting.Api.Controllers
                 })
                 .ToListAsync();
 
-            // Each stage column counts independently — a worker who puts 10 at Seating AND 10 at Checking has handled 20 pieces.
-            // Total completed = sum of all 6 stage columns across every DailyOutputRecord for the production record.
+            // FIXED: Calculate 'Completed' as the SUM of all pieces distributed across all process stages
             var completedByProduction = dailyOutputs
                 .GroupBy(d => d.ProductionRecordId)
                 .ToDictionary(
@@ -72,14 +69,9 @@ namespace CpPrinting.Api.Controllers
             {
                 storeInMap.TryGetValue(p.StoreInRecordId, out var storeIn);
 
-                // Get completed qty for this specific production record
                 var completed = completedByProduction.GetValueOrDefault(p.Id, 0);
                 var remainingQty = Math.Max(0, p.IssueQty - completed);
 
-                // Determine the single component for this production row.
-                // Priority: (1) p.Components from the production record itself (set by CPI Part flow)
-                //           (2) CPI's cut inspection Part for this specific cut (lookup)
-                //           (3) empty string — NEVER fall back to storeIn.Components (which is the full list)
                 var resolvedComponent = p.Components;
                 if (string.IsNullOrWhiteSpace(resolvedComponent))
                 {
@@ -97,15 +89,15 @@ namespace CpPrinting.Api.Controllers
                     StyleNo = p.StyleNo ?? string.Empty,
                     CustomerName = p.CustomerName ?? string.Empty,
                     ScheduleNo = storeIn?.ScheduleNo ?? string.Empty,
-                    Components = resolvedComponent,                // Single CPI-chosen component only
-                    Component = resolvedComponent,                 // Also expose as Component for frontend clarity
+                    Components = resolvedComponent,                
+                    Component = resolvedComponent,                 
                     BodyColour = storeIn?.BodyColour ?? string.Empty,
                     CutNo = p.CutNo ?? string.Empty,
                     LineNo = p.LineNo ?? string.Empty,
                     IssueDate = p.IssueDate ?? string.Empty,
                     OriginalQty = p.IssueQty,                      
-                    DispatchedQty = completed, // Sending the dynamic Max completed as DispatchedQty                 
-                    OrderQty = remainingQty,   // Remaining what the worker can still work on
+                    DispatchedQty = completed,                 
+                    OrderQty = remainingQty,   
                 };
             })
             .Where(x => x.OrderQty > 0)                            
@@ -131,7 +123,6 @@ namespace CpPrinting.Api.Controllers
         {
             var query = _context.DailyOutputRecords.AsQueryable();
 
-            // Free-text search across common fields
             if (!string.IsNullOrWhiteSpace(search))
             {
                 var s = search.Trim().ToLower();
@@ -144,7 +135,6 @@ namespace CpPrinting.Api.Controllers
                     (r.Component != null && r.Component.ToLower().Contains(s)));
             }
 
-            // Exact-match filters
             if (!string.IsNullOrWhiteSpace(styleNo))      query = query.Where(r => r.StyleNo == styleNo);
             if (!string.IsNullOrWhiteSpace(customerName)) query = query.Where(r => r.CustomerName == customerName);
             if (!string.IsNullOrWhiteSpace(cutNo))        query = query.Where(r => r.CutNo == cutNo);
@@ -152,7 +142,6 @@ namespace CpPrinting.Api.Controllers
             if (!string.IsNullOrWhiteSpace(workerName))   query = query.Where(r => r.WorkerName == workerName);
             if (!string.IsNullOrWhiteSpace(tableNo))      query = query.Where(r => r.TableNo == tableNo);
 
-            // Date range (Date is "yyyy-MM-dd" string — lex comparison works)
             if (!string.IsNullOrWhiteSpace(dateFrom))
                 query = query.Where(r => r.Date != null && string.Compare(r.Date, dateFrom) >= 0);
             if (!string.IsNullOrWhiteSpace(dateTo))
@@ -185,28 +174,18 @@ namespace CpPrinting.Api.Controllers
             if (string.IsNullOrWhiteSpace(record.TableNo))
                 return BadRequest("TableNo is required.");
 
-            var storeIn = await _context.StoreInRecords
-                .FirstOrDefaultAsync(s => s.Id == record.StoreInRecordId);
+            var storeIn = await _context.StoreInRecords.FirstOrDefaultAsync(s => s.Id == record.StoreInRecordId);
+            if (storeIn == null) return BadRequest("Linked Store-In record not found.");
 
-            if (storeIn == null)
-                return BadRequest("Linked Store-In record not found.");
+            var productionRecords = await _context.StoreProductionRecords.Where(p => p.StoreInRecordId == record.StoreInRecordId).ToListAsync();
+            if (!productionRecords.Any()) return BadRequest("No production records found for this Store-In.");
 
-            var productionRecords = await _context.StoreProductionRecords
-                .Where(p => p.StoreInRecordId == record.StoreInRecordId)
-                .ToListAsync();
-
-            if (!productionRecords.Any())
-                return BadRequest("No production records found for this Store-In.");
-
-            if (string.IsNullOrWhiteSpace(record.ProductionRecordId))
-                return BadRequest("ProductionRecordId is required.");
+            if (string.IsNullOrWhiteSpace(record.ProductionRecordId)) return BadRequest("ProductionRecordId is required.");
 
             var productionRecord = productionRecords.FirstOrDefault(p => p.Id == record.ProductionRecordId);
-            if (productionRecord == null)
-                return BadRequest("Production record not found for this Store-In.");
+            if (productionRecord == null) return BadRequest("Production record not found for this Store-In.");
 
-            if (string.IsNullOrWhiteSpace(record.Id))
-                record.Id = Guid.NewGuid().ToString();
+            if (string.IsNullOrWhiteSpace(record.Id)) record.Id = Guid.NewGuid().ToString();
 
             record.SubmissionId = storeIn.SubmissionId;
             record.StyleNo = storeIn.StyleNo ?? string.Empty;
@@ -214,7 +193,6 @@ namespace CpPrinting.Api.Controllers
             record.CutNo = productionRecord.CutNo ?? string.Empty;
             record.OrderQty = productionRecord.IssueQty;
 
-            // Calculate totals from time slots
             record.TotalSeating = record.TimeSlots?.Sum(t => t.Seating) ?? 0;
             record.TotalPrinting = record.TimeSlots?.Sum(t => t.Printing) ?? 0;
             record.TotalCuring = record.TimeSlots?.Sum(t => t.Curing) ?? 0;
@@ -222,18 +200,17 @@ namespace CpPrinting.Api.Controllers
             record.TotalPacking = record.TimeSlots?.Sum(t => t.Packing) ?? 0;
             record.TotalDispatch = record.TimeSlots?.Sum(t => t.Dispatch) ?? 0;
 
-            // NEW LOGIC: Validate against the MAX of completed processes, not just dispatch
+            // FIXED: Validate stages cumulatively against IssueQty
             var existingOutputs = await _context.DailyOutputRecords
                 .Where(d => d.ProductionRecordId == record.ProductionRecordId)
                 .Select(d => new { d.TotalSeating, d.TotalPrinting, d.TotalCuring, d.TotalChecking, d.TotalPacking, d.TotalDispatch })
                 .ToListAsync();
 
-            // Every column counts independently — sum all 6 to get the true 'pieces handled' total.
-            var existingCompleted = existingOutputs.Sum(x => x.TotalSeating + x.TotalPrinting + x.TotalCuring + x.TotalChecking + x.TotalPacking + x.TotalDispatch);
-            var newCompleted = record.TotalSeating + record.TotalPrinting + record.TotalCuring + record.TotalChecking + record.TotalPacking + record.TotalDispatch;
+            var previousTotal = existingOutputs.Sum(x => x.TotalSeating + x.TotalPrinting + x.TotalCuring + x.TotalChecking + x.TotalPacking + x.TotalDispatch);
+            var currentTotal = record.TotalSeating + record.TotalPrinting + record.TotalCuring + record.TotalChecking + record.TotalPacking + record.TotalDispatch;
 
-            if (existingCompleted + newCompleted > productionRecord.IssueQty)
-                return BadRequest($"Total completed ({existingCompleted + newCompleted}) would exceed production issue qty ({productionRecord.IssueQty}).");
+            if (previousTotal + currentTotal > productionRecord.IssueQty)
+                return BadRequest($"Total pieces distributed across all stages ({previousTotal + currentTotal}) exceeds production issue qty ({productionRecord.IssueQty}).");
 
             _context.DailyOutputRecords.Add(record);
             await _context.SaveChangesAsync();
@@ -247,32 +224,24 @@ namespace CpPrinting.Api.Controllers
         [HttpPost("daily-output/batch")]
         public async Task<ActionResult<IEnumerable<DailyOutputRecord>>> BatchCreateDailyOutput([FromBody] List<DailyOutputRecord> records)
         {
-            if (records == null || records.Count == 0)
-                return BadRequest("At least one record is required.");
+            if (records == null || records.Count == 0) return BadRequest("At least one record is required.");
 
             var saved = new List<DailyOutputRecord>();
 
             foreach (var record in records)
             {
-                if (string.IsNullOrWhiteSpace(record.StoreInRecordId))
-                    return BadRequest("StoreInRecordId is required.");
+                if (string.IsNullOrWhiteSpace(record.StoreInRecordId)) return BadRequest("StoreInRecordId is required.");
 
                 var storeIn = await _context.StoreInRecords.FirstOrDefaultAsync(s => s.Id == record.StoreInRecordId);
                 if (storeIn == null) return BadRequest("Linked Store-In record not found.");
 
-                var productionRecords = await _context.StoreProductionRecords
-                    .Where(p => p.StoreInRecordId == record.StoreInRecordId)
-                    .ToListAsync();
+                var productionRecords = await _context.StoreProductionRecords.Where(p => p.StoreInRecordId == record.StoreInRecordId).ToListAsync();
+                if (!productionRecords.Any()) return BadRequest($"No production records for Store-In '{storeIn.StyleNo}'.");
 
-                if (!productionRecords.Any())
-                    return BadRequest($"No production records for Store-In '{storeIn.StyleNo}'.");
-
-                if (string.IsNullOrWhiteSpace(record.ProductionRecordId))
-                    return BadRequest("ProductionRecordId is required for all records.");
+                if (string.IsNullOrWhiteSpace(record.ProductionRecordId)) return BadRequest("ProductionRecordId is required for all records.");
 
                 var productionRecord = productionRecords.FirstOrDefault(p => p.Id == record.ProductionRecordId);
-                if (productionRecord == null)
-                    return BadRequest($"Production record '{record.ProductionRecordId}' not found.");
+                if (productionRecord == null) return BadRequest($"Production record '{record.ProductionRecordId}' not found.");
 
                 record.Id = Guid.NewGuid().ToString();
                 record.SubmissionId = storeIn.SubmissionId;
@@ -288,12 +257,36 @@ namespace CpPrinting.Api.Controllers
                 record.TotalPacking = record.TimeSlots?.Sum(t => t.Packing) ?? 0;
                 record.TotalDispatch = record.TimeSlots?.Sum(t => t.Dispatch) ?? 0;
 
+                // FIXED: Validate cumulative stages for the batch record against DB AND the current batch
+                var existingOutputs = await _context.DailyOutputRecords
+                    .Where(d => d.ProductionRecordId == record.ProductionRecordId)
+                    .Select(d => new { d.TotalSeating, d.TotalPrinting, d.TotalCuring, d.TotalChecking, d.TotalPacking, d.TotalDispatch })
+                    .ToListAsync();
+                
+                var inBatchOutputs = records
+                    .Where(d => d.ProductionRecordId == record.ProductionRecordId && d != record)
+                    .Select(d => new { 
+                        TotalSeating = d.TimeSlots?.Sum(t => t.Seating) ?? 0, 
+                        TotalPrinting = d.TimeSlots?.Sum(t => t.Printing) ?? 0, 
+                        TotalCuring = d.TimeSlots?.Sum(t => t.Curing) ?? 0, 
+                        TotalChecking = d.TimeSlots?.Sum(t => t.Checking) ?? 0, 
+                        TotalPacking = d.TimeSlots?.Sum(t => t.Packing) ?? 0, 
+                        TotalDispatch = d.TimeSlots?.Sum(t => t.Dispatch) ?? 0 
+                    })
+                    .ToList();
+
+                var previousTotal = existingOutputs.Sum(x => x.TotalSeating + x.TotalPrinting + x.TotalCuring + x.TotalChecking + x.TotalPacking + x.TotalDispatch);
+                var batchOthersTotal = inBatchOutputs.Sum(x => x.TotalSeating + x.TotalPrinting + x.TotalCuring + x.TotalChecking + x.TotalPacking + x.TotalDispatch);
+                var currentTotal = record.TotalSeating + record.TotalPrinting + record.TotalCuring + record.TotalChecking + record.TotalPacking + record.TotalDispatch;
+
+                if (previousTotal + batchOthersTotal + currentTotal > productionRecord.IssueQty)
+                    return BadRequest($"Total pieces distributed across all stages for {record.StyleNo} ({previousTotal + batchOthersTotal + currentTotal}) exceeds production issue qty ({productionRecord.IssueQty}).");
+
                 _context.DailyOutputRecords.Add(record);
                 saved.Add(record);
             }
 
             await _context.SaveChangesAsync();
-
             await _logger.Log(User, HttpContext, "Create", "DailyOutput", string.Join(",", saved.Select(r => r.Id)),
                 $"Batch logged {saved.Count} daily output(s) for {saved.FirstOrDefault()?.StyleNo}");
 
@@ -303,22 +296,17 @@ namespace CpPrinting.Api.Controllers
         [HttpPut("daily-output/{id}")]
         public async Task<ActionResult<DailyOutputRecord>> UpdateDailyOutput(string id, DailyOutputRecord record)
         {
-            if (string.IsNullOrWhiteSpace(id))
-                return BadRequest("Record ID is required.");
+            if (string.IsNullOrWhiteSpace(id)) return BadRequest("Record ID is required.");
 
             var existing = await _context.DailyOutputRecords.FirstOrDefaultAsync(r => r.Id == id);
-            if (existing == null)
-                return NotFound("Daily output record not found.");
+            if (existing == null) return NotFound("Daily output record not found.");
 
             var storeIn = await _context.StoreInRecords.FirstOrDefaultAsync(s => s.Id == record.StoreInRecordId);
-            if (storeIn == null)
-                return BadRequest("Linked Store-In record not found.");
+            if (storeIn == null) return BadRequest("Linked Store-In record not found.");
 
             var productionRecord = await _context.StoreProductionRecords.FirstOrDefaultAsync(p => p.Id == existing.ProductionRecordId);
-            if (productionRecord == null)
-                return BadRequest("Production record not found.");
+            if (productionRecord == null) return BadRequest("Production record not found.");
 
-            // Update editable fields and recalculate totals FIRST
             existing.Date = record.Date;
             existing.Component = record.Component;
             existing.TableNo = record.TableNo;
@@ -334,21 +322,19 @@ namespace CpPrinting.Api.Controllers
             existing.TotalPacking = existing.TimeSlots.Sum(t => t.Packing);
             existing.TotalDispatch = existing.TimeSlots.Sum(t => t.Dispatch);
 
-            // NEW LOGIC: Validate against the MAX of completed processes across other records
+            // FIXED: Validate stages cumulatively against IssueQty
             var otherOutputs = await _context.DailyOutputRecords
                 .Where(d => d.ProductionRecordId == existing.ProductionRecordId && d.Id != existing.Id)
                 .Select(d => new { d.TotalSeating, d.TotalPrinting, d.TotalCuring, d.TotalChecking, d.TotalPacking, d.TotalDispatch })
                 .ToListAsync();
 
-            // Every column counts independently — sum all 6 for the true 'pieces handled' total.
-            var otherCompleted = otherOutputs.Sum(x => x.TotalSeating + x.TotalPrinting + x.TotalCuring + x.TotalChecking + x.TotalPacking + x.TotalDispatch);
-            var newCompleted = existing.TotalSeating + existing.TotalPrinting + existing.TotalCuring + existing.TotalChecking + existing.TotalPacking + existing.TotalDispatch;
+            var otherTotal = otherOutputs.Sum(x => x.TotalSeating + x.TotalPrinting + x.TotalCuring + x.TotalChecking + x.TotalPacking + x.TotalDispatch);
+            var currentTotal = existing.TotalSeating + existing.TotalPrinting + existing.TotalCuring + existing.TotalChecking + existing.TotalPacking + existing.TotalDispatch;
 
-            if (otherCompleted + newCompleted > productionRecord.IssueQty)
-                return BadRequest($"Total completed ({otherCompleted + newCompleted}) would exceed production issue qty ({productionRecord.IssueQty}).");
+            if (otherTotal + currentTotal > productionRecord.IssueQty)
+                return BadRequest($"Total pieces distributed across all stages ({otherTotal + currentTotal}) exceeds production issue qty ({productionRecord.IssueQty}).");
 
             await _context.SaveChangesAsync();
-
             await _logger.Log(User, HttpContext, "Update", "DailyOutput", existing.Id,
                 $"Updated daily output for {existing.StyleNo} (Cut: {existing.CutNo})");
 
