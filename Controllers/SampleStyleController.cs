@@ -154,21 +154,29 @@ namespace CpPrinting.Api.Controllers
 
             style.Revisions ??= new List<SampleStyleRevision>();
 
+            // If a new artwork URL is provided, it replaces the current ImagePath.
+            // The revision entry captures the artwork at this revision point.
+            var artworkAtRevision = !string.IsNullOrWhiteSpace(dto.ArtworkUrl)
+                ? dto.ArtworkUrl.Trim()
+                : style.ImagePath;
+
+            if (!string.IsNullOrWhiteSpace(dto.ArtworkUrl))
+                style.ImagePath = dto.ArtworkUrl.Trim();
+
             var newEntry = new SampleStyleRevision
             {
                 Id         = Guid.NewGuid().ToString(),
                 RevisionNo = style.Revisions.Count + 1,
                 Comment    = dto.Comment.Trim(),
+                ArtworkUrl = artworkAtRevision,
                 CreatedAt  = Now,
                 CreatedBy  = CurrentUser,
             };
 
-            // Replace the list entirely so EF detects the JSON column as modified.
-            // Mutating in-place (.Add) does NOT trigger EF change tracking on JSON columns.
+            // Replace list entirely — EF does not detect in-place .Add on JSON columns
             style.Revisions = new List<SampleStyleRevision>(style.Revisions) { newEntry };
             style.UpdatedAt = Now;
 
-            // Explicitly mark Revisions as modified (required for JSON columns)
             _context.Entry(style).Property(e => e.Revisions).IsModified = true;
 
             await _context.SaveChangesAsync();
@@ -243,6 +251,36 @@ namespace CpPrinting.Api.Controllers
             style.SubmittedAt        = Now;
             style.AdminStatus        = "Pending";
             style.UpdatedAt          = Now;
+
+            // ── Create Submission record immediately so admin can see it ──────
+            // Without this, ApproveSubmission page shows 0 found because it
+            // queries the Submissions table, not SampleStyles.
+            var existingSubmission = await _context.Submissions
+                .FirstOrDefaultAsync(s => s.Id == style.Id);
+
+            if (existingSubmission == null)
+            {
+                // Build comment from latest revision if available
+                var latestRev = style.Revisions?
+                    .OrderByDescending(r => r.RevisionNo)
+                    .FirstOrDefault();
+
+                var comment = latestRev != null
+                    ? $"Rev {latestRev.RevisionNo}: {latestRev.Comment}"
+                    : style.DeveloperComments ?? $"Sample style submitted — {style.StyleNo} ({style.Component})";
+
+                _context.Submissions.Add(new SubmissionForm
+                {
+                    Id               = style.Id,
+                    StyleNo          = style.StyleNo,
+                    CustomerName     = style.Customer,
+                    SubmissionDate   = Now,
+                    Level            = "Sample",
+                    Comment          = comment,
+                    RevisionNo       = latestRev?.RevisionNo ?? 1,
+                    IsLatestRevision = true,
+                });
+            }
 
             await _context.SaveChangesAsync();
             return Ok(style);
@@ -452,6 +490,40 @@ namespace CpPrinting.Api.Controllers
         // ==========================================
 
         // ==========================================
+        // REVISION ARTWORK UPLOAD
+        // POST /api/samplestyle/revisionimage
+        // Separate from the main image upload — returns full URL.
+        // Called when developer uploads a revision artwork.
+        // ==========================================
+
+        [Authorize(Roles = "Admin,Developer")]
+        [HttpPost("revisionimage")]
+        [RequestSizeLimit(10_485_760)]
+        public async Task<ActionResult> UploadRevisionImage(IFormFile file)
+        {
+            if (file == null || file.Length == 0)
+                return BadRequest("No file uploaded.");
+            if (file.Length > MaxImageBytes)
+                return BadRequest("File exceeds 10 MB limit.");
+            if (!AllowedImageTypes.Contains(file.ContentType.ToLower()))
+                return BadRequest("Only JPEG, PNG, and WebP images are allowed.");
+
+            var dir = Path.Combine(_env.WebRootPath ?? _env.ContentRootPath, "uploads", "revisions");
+            Directory.CreateDirectory(dir);
+
+            var ext      = Path.GetExtension(file.FileName).ToLowerInvariant();
+            var fileName = $"rev_{Guid.NewGuid()}{ext}";
+            var filePath = Path.Combine(dir, fileName);
+
+            using (var stream = System.IO.File.Create(filePath))
+                await file.CopyToAsync(stream);
+
+            // Return full URL so it works as a plain <img src> everywhere
+            var baseUrl = $"{Request.Scheme}://{Request.Host}";
+            return Ok(new { url = $"{baseUrl}/uploads/revisions/{fileName}" });
+        }
+
+        // ==========================================
         // SERVE SAMPLE IMAGE
         // GET /api/samplestyle/image?path=/uploads/samples/xyz.jpg
         // ==========================================
@@ -501,7 +573,9 @@ namespace CpPrinting.Api.Controllers
 
     public class AddRevisionDto
     {
-        public string Comment { get; set; } = string.Empty;
+        public string  Comment    { get; set; } = string.Empty;
+        /// <summary>Optional — full URL of the revision artwork. Replaces current ImagePath.</summary>
+        public string? ArtworkUrl { get; set; }
     }
 
     public class SubmitToAdminDto
