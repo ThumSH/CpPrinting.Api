@@ -1,53 +1,50 @@
 // Models/SampleStyle.cs
 namespace CpPrinting.Api.Models
 {
-    // ==========================================
-    // SAMPLE STYLE REVISION
-    // Each time the client gives feedback, the
-    // developer adds a comment. System auto-numbers
-    // it as Revision 1, 2, 3...
-    // Stored as JSON column on SampleStyle.
-    // ==========================================
+    // ── Revision entry ────────────────────────────────────────────────────────
+    // Each client feedback = one revision. Dev adds comment + optionally
+    // replaces the artwork. Auto-numbered 1, 2, 3...
     public class SampleStyleRevision
     {
-        public string Id          { get; set; } = Guid.NewGuid().ToString();
-        public int    RevisionNo  { get; set; }
-        public string Comment     { get; set; } = string.Empty;
-        public string CreatedAt   { get; set; } = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm");
-        public string CreatedBy   { get; set; } = string.Empty;
+        public string  Id         { get; set; } = Guid.NewGuid().ToString();
+        public int     RevisionNo { get; set; }
+        public string  Comment    { get; set; } = string.Empty;
+        // Artwork at time of this revision (may differ from the original ImagePath)
+        public string? ArtworkUrl { get; set; }
+        public string  CreatedAt  { get; set; } = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm");
+        public string  CreatedBy  { get; set; } = string.Empty;
     }
 
-    // ==========================================
-    // SAMPLE STYLE
+    // ── Sample Style ──────────────────────────────────────────────────────────
     // One record per component per style.
-    // e.g. AD001-Front-Black and AD001-Back-White
-    // are two separate rows under the same DevelopmentJob.
-    // ==========================================
+    // AD001-Front and AD001-Back are two separate rows.
+    // A style+component can have multiple body colours — stored as comma-separated.
     public class SampleStyle
     {
         public string Id { get; set; } = string.Empty;
 
-        // ── Linked job info ───────────────────────────────────────────────────
+        // ── Linked job ────────────────────────────────────────────────────────
         public string DevelopmentJobId  { get; set; } = string.Empty;
         public string Customer          { get; set; } = string.Empty;
         public string StyleNo           { get; set; } = string.Empty;
         public string Season            { get; set; } = string.Empty;
         public string PrintingTechnique { get; set; } = string.Empty;
-        public string BodyColour        { get; set; } = string.Empty;
-        public string PrintColour       { get; set; } = string.Empty;
-        public string PrintColourQty    { get; set; } = string.Empty;
-        public string WashingStandard   { get; set; } = string.Empty;
 
-        /// <summary>e.g. "Front", "Back", "Sleeve", "Pocket"</summary>
+        public string BodyColour     { get; set; } = string.Empty;
+        public string PrintColour    { get; set; } = string.Empty;
+        public string PrintColourQty { get; set; } = string.Empty;
+        public string WashingStandard { get; set; } = string.Empty;
+
+        /// <summary>"Front" | "Back" | "Sleeve" | "Pocket" | "Waistband" | "Other"</summary>
         public string Component { get; set; } = string.Empty;
 
-        // ── Artwork image ─────────────────────────────────────────────────────
+        // ── Current artwork ───────────────────────────────────────────────────
+        // Always reflects the latest revision artwork (or the original if no revision).
         public string? ImagePath { get; set; }
 
-        // ── Client revision history (JSON column) ─────────────────────────────
-        // Each entry = one client feedback comment added by the developer.
-        // Auto-numbered Revision 1, 2, 3...
-        // Register in AppDbContext.OnModelCreating() — see bottom of this file.
+        // ── Revision history (JSON column) ────────────────────────────────────
+        // Each entry captures the client comment + artwork at that revision.
+        // Register in AppDbContext.OnModelCreating() — see bottom of file.
         public List<SampleStyleRevision> Revisions { get; set; } = new();
 
         // ── Developer workflow ────────────────────────────────────────────────
@@ -71,8 +68,27 @@ namespace CpPrinting.Api.Models
         public bool    SubmittedToAdmin { get; set; } = false;
         public string? SubmittedAt      { get; set; }
 
-        // ── Timestamps ────────────────────────────────────────────────────────
+        // ── Timestamps ───────────────────────────────────────────────────────
         public string CreatedAt { get; set; } = string.Empty;
         public string UpdatedAt { get; set; } = string.Empty;
     }
 }
+
+// ==========================================
+// AppDbContext.OnModelCreating() — ADD THIS BLOCK
+// (after the existing DOWNTIME block, before closing brace)
+//
+//   modelBuilder.Entity<SampleStyle>()
+//       .Property(e => e.Revisions)
+//       .HasConversion(
+//           v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+//           v => string.IsNullOrWhiteSpace(v)
+//               ? new List<SampleStyleRevision>()
+//               : JsonSerializer.Deserialize<List<SampleStyleRevision>>(v,
+//                    (JsonSerializerOptions?)null) ?? new()
+//       );
+//
+// Then run:
+//   dotnet ef migrations add AddRevisionArtwork
+//   dotnet ef database update --connection "Server=192.168.1.100;..."
+// ==========================================
