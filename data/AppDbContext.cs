@@ -95,6 +95,17 @@ namespace CpPrinting.Api.Data
                     v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
                     v => JsonSerializer.Deserialize<List<DowntimeEntry>>(v, (JsonSerializerOptions?)null)!
                 );
+
+            // SAMPLE STYLE: Revisions JSON
+            // Null-safe: existing rows with NULL or empty string return an empty list.
+            modelBuilder.Entity<SampleStyle>()
+                .Property(e => e.Revisions)
+                .HasConversion(
+                    v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+                    v => string.IsNullOrWhiteSpace(v)
+                        ? new List<SampleStyleRevision>()
+                        : JsonSerializer.Deserialize<List<SampleStyleRevision>>(v, (JsonSerializerOptions?)null) ?? new List<SampleStyleRevision>()
+                );
         }
     }
 }

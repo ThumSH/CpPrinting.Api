@@ -14,7 +14,7 @@ namespace CpPrinting.Api.Controllers
         private readonly AppDbContext _context;
         private readonly IWebHostEnvironment _env;
 
-        private static readonly string[] AllowedImageTypes = ["image/jpeg", "image/png", "image/webp"];
+        private static readonly string[] AllowedImageTypes = ["image/jpeg", "image/png", "image/webp", "image/gif"];
         private const long MaxImageBytes = 10 * 1024 * 1024;
 
         public DevelopmentController(AppDbContext context, IWebHostEnvironment env)
@@ -47,7 +47,7 @@ namespace CpPrinting.Api.Controllers
             if (!AllowedImageTypes.Contains(file.ContentType.ToLower()))
                 return BadRequest("Only JPEG, PNG, and WebP images are allowed.");
 
-            var uploadsDir = Path.Combine(_env.WebRootPath, "uploads", "artworks");
+            var uploadsDir = Path.Combine(_env.WebRootPath ?? _env.ContentRootPath, "uploads", "artworks");
             Directory.CreateDirectory(uploadsDir);
 
             var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
@@ -57,8 +57,9 @@ namespace CpPrinting.Api.Controllers
             using (var stream = System.IO.File.Create(filePath))
                 await file.CopyToAsync(stream);
 
-            // Return the relative URL — frontend prefixes with API.BASE
-            return Ok(new { url = $"/uploads/artworks/{fileName}" });
+            // Return full absolute URL so it works as a plain <img src> everywhere
+            var baseUrl = $"{Request.Scheme}://{Request.Host}";
+            return Ok(new { url = $"{baseUrl}/uploads/artworks/{fileName}" });
         }
 
         // ==========================================
@@ -247,6 +248,34 @@ namespace CpPrinting.Api.Controllers
             }
 
             return NoContent();
+        }
+
+        // ==========================================
+        // SERVE ARTWORK IMAGE
+        // GET /api/development/image?path=/uploads/artworks/xyz.jpg
+        // Needed because UseStaticFiles is not configured in Program.cs
+        // ==========================================
+
+        [HttpGet("image")]
+        public IActionResult GetImage([FromQuery] string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !path.StartsWith("/uploads/"))
+                return BadRequest("Invalid path.");
+
+            var root     = _env.WebRootPath ?? _env.ContentRootPath;
+            var filePath = Path.Combine(root, path.TrimStart('/'));
+            if (!System.IO.File.Exists(filePath)) return NotFound();
+
+            var ext = Path.GetExtension(filePath).ToLowerInvariant();
+            var ct  = ext switch
+            {
+                ".jpg" or ".jpeg" => "image/jpeg",
+                ".png"            => "image/png",
+                ".webp"           => "image/webp",
+                ".gif"            => "image/gif",
+                _                 => "application/octet-stream",
+            };
+            return PhysicalFile(filePath, ct);
         }
 
         private bool JobExists(string id) =>
