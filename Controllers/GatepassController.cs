@@ -31,94 +31,88 @@ namespace CpPrinting.Api.Controllers
         [HttpGet("eligible-dispatch")]
         public async Task<ActionResult<IEnumerable<EligibleGatepassDto>>> GetEligibleDispatchItems()
         {
+            // ── Flow: Store-In (cuts+bundles) → CPI passed → Gatepass ──────────
+            // Production records are a separate concern and do NOT gate the gatepass.
+            // Eligible = StoreIn records that have a PASSED CPI report and still
+            // have remaining qty to dispatch (totalCutQty - alreadyDispatched).
+
             var notes = await _context.AdviceNotes.ToListAsync();
 
-            var productionRecords = await _context.StoreProductionRecords
-                .OrderByDescending(p => p.IssueDate)
+            // Only StoreIn records with a CPI-Passed report are eligible
+            var passedCpiStoreInIds = await _context.CpiReports
+                .Where(r => r.InspectionStatus == "Passed")
+                .Select(r => r.StoreInRecordId)
                 .ToListAsync();
 
-            // Load store-in records WITH cuts and bundles
-            var storeInIds = productionRecords
-                .Select(p => p.StoreInRecordId)
-                .Distinct()
-                .ToList();
+            if (!passedCpiStoreInIds.Any())
+                return Ok(new List<EligibleGatepassDto>());
 
             var storeInRecords = await _context.StoreInRecords
                 .Include(s => s.Cuts)
                     .ThenInclude(c => c.Bundles)
-                .Where(s => storeInIds.Contains(s.Id))
+                .Where(s => passedCpiStoreInIds.Contains(s.Id))
                 .ToListAsync();
 
-            // Load CPI reports so we can pull the Part chosen for each cut.
-            // Note: CutInspections is a JSON column — no .Include() needed; it deserializes automatically.
+            // Load CPI reports to get Part per cut (from QC inspection)
             var cpiReports = await _context.CpiReports
-                .Where(r => storeInIds.Contains(r.StoreInRecordId))
+                .Where(r => passedCpiStoreInIds.Contains(r.StoreInRecordId))
                 .ToListAsync();
             var cpiByStoreIn = cpiReports.ToDictionary(r => r.StoreInRecordId);
 
-            // Group by store-in record — one eligible item per style/schedule
             var eligible = storeInRecords.Select(storeIn =>
             {
-                var productionsForThisStoreIn = productionRecords
-                    .Where(p => p.StoreInRecordId == storeIn.Id)
-                    .ToList();
+                // Total qty = sum of all cut qtys in this StoreIn
+                var totalCutQty = storeIn.Cuts.Sum(c => c.CutQty);
 
-                if (!productionsForThisStoreIn.Any()) return null;
-
-                var totalIssued = productionsForThisStoreIn.Sum(p => p.IssueQty);
+                // Already dispatched against this StoreIn
                 var totalAlreadyDispatched = notes
-                    .Where(n => productionsForThisStoreIn.Select(p => p.Id).Contains(n.ProductionRecordId))
+                    .Where(n => n.StoreInRecordId == storeIn.Id)
                     .Sum(n => n.DispatchQty);
 
-                var remainingDispatchQty = Math.Max(0, totalIssued - totalAlreadyDispatched);
-
-                var firstProd = productionsForThisStoreIn.First();
-
-                // Collect all production record IDs for this store-in
-                var productionRecordIds = productionsForThisStoreIn.Select(p => p.Id).ToList();
+                var remainingDispatchQty = Math.Max(0, totalCutQty - totalAlreadyDispatched);
 
                 return new EligibleGatepassDto
                 {
-                    ProductionRecordId = string.Join(",", productionRecordIds),
-                    StoreInRecordId = storeIn.Id,
-                    SubmissionId = storeIn.SubmissionId,
-                    RevisionNo = storeIn.RevisionNo,
-                    StyleNo = storeIn.StyleNo ?? string.Empty,
-                    CustomerName = storeIn.CustomerName ?? string.Empty,
-                    Components = storeIn.Components ?? string.Empty,
-                    CutNo = string.Join(", ", productionsForThisStoreIn.Select(p => p.CutNo).Distinct()),
-                    IssueDate = firstProd.IssueDate ?? string.Empty,
-                    LineNo = string.Join(", ", productionsForThisStoreIn.Select(p => p.LineNo).Distinct()),
-                    IssueQty = totalIssued,
+                    ProductionRecordId = string.Empty, // not used in this flow
+                    StoreInRecordId    = storeIn.Id,
+                    SubmissionId       = storeIn.SubmissionId,
+                    RevisionNo         = storeIn.RevisionNo,
+                    StyleNo            = storeIn.StyleNo      ?? string.Empty,
+                    CustomerName       = storeIn.CustomerName ?? string.Empty,
+                    Components         = storeIn.Components   ?? string.Empty,
+                    CutNo              = string.Join(", ", storeIn.Cuts.Select(c => c.CutNo)),
+                    IssueDate          = storeIn.CutInDate    ?? string.Empty,
+                    LineNo             = string.Empty,
+                    IssueQty           = totalCutQty,
                     RemainingDispatchQty = remainingDispatchQty,
-                    ScheduleNo = storeIn.ScheduleNo,
-                    BodyColour = storeIn.BodyColour ?? string.Empty,
-                    PrintColour = storeIn.PrintColour ?? string.Empty,
-                    Season = storeIn.Season ?? string.Empty,
-                    Cuts = storeIn.Cuts?.Select(c =>
+                    ScheduleNo         = storeIn.ScheduleNo   ?? string.Empty,
+                    BodyColour         = storeIn.BodyColour    ?? string.Empty,
+                    PrintColour        = storeIn.PrintColour   ?? string.Empty,
+                    Season             = storeIn.Season        ?? string.Empty,
+                    Cuts = storeIn.Cuts.Select(c =>
                     {
-                        // Look up the Part chosen by QC for this specific cut
                         cpiByStoreIn.TryGetValue(storeIn.Id, out var cpiForStoreIn);
-                        var cpiCut = cpiForStoreIn?.CutInspections?.FirstOrDefault(ci => ci.CutNo == c.CutNo);
+                        var cpiCut = cpiForStoreIn?.CutInspections
+                            ?.FirstOrDefault(ci => ci.CutNo == c.CutNo);
                         var cutPart = cpiCut?.Part ?? string.Empty;
 
                         return new GatepassCutDto
                         {
-                            CutNo = c.CutNo,
+                            CutNo  = c.CutNo,
                             CutQty = c.CutQty,
-                            Part = cutPart,
+                            Part   = cutPart,
                             Bundles = c.Bundles?.Select(b => new GatepassBundleDto
                             {
-                                BundleNo = b.BundleNo,
-                                BundleQty = b.BundleQty,
-                                Size = b.Size,
+                                BundleNo    = b.BundleNo,
+                                BundleQty   = b.BundleQty,
+                                Size        = b.Size,
                                 NumberRange = b.NumberRange ?? string.Empty
                             }).ToList() ?? new()
                         };
-                    }).ToList() ?? new()
+                    }).ToList()
                 };
             })
-            .Where(x => x != null && x.RemainingDispatchQty > 0)
+            .Where(x => x.RemainingDispatchQty > 0)
             .ToList();
 
             return Ok(eligible);
@@ -158,23 +152,27 @@ namespace CpPrinting.Api.Controllers
             if (storeIn == null)
                 return BadRequest("Linked Store-In record not found.");
 
-            // Get all production records for this store-in
-            var productionRecords = await _context.StoreProductionRecords
-                .Where(p => p.StoreInRecordId == note.StoreInRecordId)
-                .ToListAsync();
+            // ── Validate against StoreIn cuts directly — no production dependency ──
+            var storeInWithCuts = await _context.StoreInRecords
+                .Include(s => s.Cuts)
+                .FirstOrDefaultAsync(s => s.Id == note.StoreInRecordId);
 
-            if (!productionRecords.Any())
-                return BadRequest("No production records found for this Store-In record.");
+            var totalCutQty = storeInWithCuts?.Cuts.Sum(c => c.CutQty) ?? 0;
+            if (totalCutQty <= 0)
+                return BadRequest("No cuts found for this Store-In record.");
 
-            var totalIssued = productionRecords.Sum(p => p.IssueQty);
-            var productionRecordIds = productionRecords.Select(p => p.Id).ToList();
+            // CPI must have passed before dispatch
+            var cpiPassed = await _context.CpiReports
+                .AnyAsync(r => r.StoreInRecordId == note.StoreInRecordId
+                            && r.InspectionStatus == "Passed");
+            if (!cpiPassed)
+                return BadRequest("CPI inspection must be Passed before dispatching.");
 
             var totalAlreadyDispatched = await _context.AdviceNotes
-                .Where(n => productionRecordIds.Contains(n.ProductionRecordId) ||
-                            n.StoreInRecordId == note.StoreInRecordId)
+                .Where(n => n.StoreInRecordId == note.StoreInRecordId)
                 .SumAsync(n => n.DispatchQty);
 
-            var remainingDispatchQty = Math.Max(0, totalIssued - totalAlreadyDispatched);
+            var remainingDispatchQty = Math.Max(0, totalCutQty - totalAlreadyDispatched);
 
             if (note.DispatchQty > remainingDispatchQty)
                 return BadRequest($"DispatchQty exceeds remaining dispatchable qty ({remainingDispatchQty}).");
@@ -183,17 +181,15 @@ namespace CpPrinting.Api.Controllers
                 note.Id = Guid.NewGuid().ToString();
 
             // Backend source of truth
-            note.ProductionRecordId = string.Join(",", productionRecordIds);
-            note.SubmissionId = storeIn.SubmissionId;
-            note.RevisionNo = storeIn.RevisionNo;
-            note.StyleNo = storeIn.StyleNo ?? string.Empty;
-            note.CustomerName = storeIn.CustomerName ?? string.Empty;
-            note.CutNo = string.Join(", ", productionRecords.Select(p => p.CutNo).Distinct());
-            note.Component = storeIn.Components ?? string.Empty;
-            note.BalanceQty = Math.Max(0, remainingDispatchQty - note.DispatchQty);
-
-            if (storeIn != null)
-                note.ScheduleNo = storeIn.ScheduleNo;
+            note.ProductionRecordId = string.Empty;
+            note.SubmissionId  = storeIn.SubmissionId;
+            note.RevisionNo    = storeIn.RevisionNo;
+            note.StyleNo       = storeIn.StyleNo      ?? string.Empty;
+            note.CustomerName  = storeIn.CustomerName  ?? string.Empty;
+            note.CutNo         = string.Join(", ", storeInWithCuts?.Cuts.Select(c => c.CutNo).Distinct() ?? Enumerable.Empty<string>());
+            note.Component     = storeIn.Components    ?? string.Empty;
+            note.BalanceQty    = Math.Max(0, remainingDispatchQty - note.DispatchQty);
+            note.ScheduleNo    = storeIn.ScheduleNo    ?? string.Empty;
 
             _context.AdviceNotes.Add(note);
             await _context.SaveChangesAsync();
@@ -226,17 +222,18 @@ namespace CpPrinting.Api.Controllers
             if (storeIn == null)
                 return BadRequest("Linked Store-In record not found.");
 
-            var productionRecords = await _context.StoreProductionRecords
-                .Where(p => p.StoreInRecordId == existing.StoreInRecordId)
-                .ToListAsync();
+            // Validate against StoreIn cuts directly
+            var storeInWithCuts = await _context.StoreInRecords
+                .Include(s => s.Cuts)
+                .FirstOrDefaultAsync(s => s.Id == existing.StoreInRecordId);
 
-            var totalIssued = productionRecords.Sum(p => p.IssueQty);
+            var totalCutQty = storeInWithCuts?.Cuts.Sum(c => c.CutQty) ?? 0;
 
             var totalDispatchedExcludingCurrent = await _context.AdviceNotes
                 .Where(n => n.StoreInRecordId == existing.StoreInRecordId && n.Id != id)
                 .SumAsync(n => n.DispatchQty);
 
-            var remainingDispatchQty = Math.Max(0, totalIssued - totalDispatchedExcludingCurrent);
+            var remainingDispatchQty = Math.Max(0, totalCutQty - totalDispatchedExcludingCurrent);
 
             if (note.DispatchQty > remainingDispatchQty)
                 return BadRequest($"DispatchQty exceeds remaining dispatchable qty ({remainingDispatchQty}).");
@@ -257,9 +254,9 @@ namespace CpPrinting.Api.Controllers
             // Re-apply backend truth from store-in
             existing.StyleNo = storeIn.StyleNo ?? string.Empty;
             existing.CustomerName = storeIn.CustomerName ?? string.Empty;
-            existing.ScheduleNo = storeIn.ScheduleNo;
+            existing.ScheduleNo = storeIn.ScheduleNo ?? string.Empty;
             existing.Component = storeIn.Components ?? string.Empty;
-            existing.CutNo = string.Join(", ", productionRecords.Select(p => p.CutNo).Distinct());
+            existing.CutNo = string.Join(", ", storeInWithCuts?.Cuts.Select(c => c.CutNo).Distinct() ?? Enumerable.Empty<string>());
 
             await _context.SaveChangesAsync();
 

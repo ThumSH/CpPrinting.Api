@@ -28,6 +28,21 @@ namespace CpPrinting.Api.Controllers
         private string CurrentUser => User.FindFirstValue(ClaimTypes.Name) ?? "Unknown";
         private string Now => DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm");
 
+        // ── Helper: derive OriginalImagePath at response time ─────────────────
+        // OriginalImagePath is [NotMapped] — computed from revision history, no DB column.
+        private static void PopulateOriginalImagePath(SampleStyle style)
+        {
+            if (style.Revisions != null && style.Revisions.Count > 0)
+            {
+                var first = style.Revisions.OrderBy(r => r.RevisionNo).First();
+                style.OriginalImagePath = first.PreviousArtworkUrl ?? style.ImagePath;
+            }
+            else
+            {
+                style.OriginalImagePath = style.ImagePath;
+            }
+        }
+
         // ==========================================
         // GET ALL / GET BY ID
         // ==========================================
@@ -41,7 +56,6 @@ namespace CpPrinting.Api.Controllers
             [FromQuery] bool?   submittedToAdmin = null)
         {
             var query = _context.SampleStyles.AsQueryable();
-
             if (!string.IsNullOrWhiteSpace(customer))
                 query = query.Where(s => s.Customer.ToLower().Contains(customer.ToLower()));
             if (!string.IsNullOrWhiteSpace(styleNo))
@@ -53,7 +67,9 @@ namespace CpPrinting.Api.Controllers
             if (submittedToAdmin.HasValue)
                 query = query.Where(s => s.SubmittedToAdmin == submittedToAdmin.Value);
 
-            return Ok(await query.OrderByDescending(s => s.CreatedAt).ToListAsync());
+            var styles = await query.OrderByDescending(s => s.CreatedAt).ToListAsync();
+            foreach (var s in styles) PopulateOriginalImagePath(s);
+            return Ok(styles);
         }
 
         [HttpGet("{id}")]
@@ -61,6 +77,7 @@ namespace CpPrinting.Api.Controllers
         {
             var style = await _context.SampleStyles.FindAsync(id);
             if (style == null) return NotFound();
+            PopulateOriginalImagePath(style);
             return Ok(style);
         }
 
@@ -79,15 +96,14 @@ namespace CpPrinting.Api.Controllers
             style.Revisions        = new List<SampleStyleRevision>();
             style.CreatedAt        = Now;
             style.UpdatedAt        = Now;
-
             _context.SampleStyles.Add(style);
             await _context.SaveChangesAsync();
+            PopulateOriginalImagePath(style);
             return Ok(style);
         }
 
         // ==========================================
         // IMAGE UPLOAD
-        // POST /api/samplestyle/{id}/image
         // ==========================================
 
         [Authorize(Roles = "Admin,Developer")]
@@ -98,10 +114,8 @@ namespace CpPrinting.Api.Controllers
             var style = await _context.SampleStyles.FindAsync(id);
             if (style == null) return NotFound();
 
-            if (file == null || file.Length == 0)
-                return BadRequest("No file uploaded.");
-            if (file.Length > MaxImageBytes)
-                return BadRequest("File exceeds 10 MB limit.");
+            if (file == null || file.Length == 0)     return BadRequest("No file uploaded.");
+            if (file.Length > MaxImageBytes)           return BadRequest("File exceeds 10 MB limit.");
             if (!AllowedImageTypes.Contains(file.ContentType.ToLower()))
                 return BadRequest("Only JPEG, PNG, and WebP images are allowed.");
 
@@ -110,32 +124,25 @@ namespace CpPrinting.Api.Controllers
 
             if (!string.IsNullOrEmpty(style.ImagePath))
             {
-                var oldFile = Path.Combine(_env.WebRootPath ?? _env.ContentRootPath, style.ImagePath.TrimStart('/'));
-                if (System.IO.File.Exists(oldFile)) System.IO.File.Delete(oldFile);
+                var old = Path.Combine(_env.WebRootPath ?? _env.ContentRootPath, style.ImagePath.TrimStart('/'));
+                if (System.IO.File.Exists(old)) System.IO.File.Delete(old);
             }
 
             var ext      = Path.GetExtension(file.FileName).ToLowerInvariant();
             var fileName = $"{id}_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}{ext}";
             var filePath = Path.Combine(uploadsDir, fileName);
-
             using (var stream = System.IO.File.Create(filePath))
                 await file.CopyToAsync(stream);
 
             style.ImagePath = $"/uploads/samples/{fileName}";
             style.UpdatedAt = Now;
             await _context.SaveChangesAsync();
+            PopulateOriginalImagePath(style);
             return Ok(style);
         }
 
         // ==========================================
         // ADD REVISION
-        // Each time the client gives feedback, the
-        // developer adds a comment here.
-        // System auto-numbers: Rev 1, Rev 2, Rev 3...
-        // Blocked once ClientApproved = true.
-        //
-        // POST /api/samplestyle/{id}/revisions
-        // Body: { "comment": "Client asked to fix the colour on front panel" }
         // ==========================================
 
         [Authorize(Roles = "Admin,Developer")]
@@ -154,43 +161,35 @@ namespace CpPrinting.Api.Controllers
 
             style.Revisions ??= new List<SampleStyleRevision>();
 
-            // If a new artwork URL is provided, it replaces the current ImagePath.
-            // The revision entry captures the artwork at this revision point.
-            var artworkAtRevision = !string.IsNullOrWhiteSpace(dto.ArtworkUrl)
-                ? dto.ArtworkUrl.Trim()
-                : style.ImagePath;
-
+            var previousArtwork = style.ImagePath;
+            string? newArtworkUrl = null;
             if (!string.IsNullOrWhiteSpace(dto.ArtworkUrl))
-                style.ImagePath = dto.ArtworkUrl.Trim();
+            {
+                newArtworkUrl   = dto.ArtworkUrl.Trim();
+                style.ImagePath = newArtworkUrl;
+            }
 
             var newEntry = new SampleStyleRevision
             {
-                Id         = Guid.NewGuid().ToString(),
-                RevisionNo = style.Revisions.Count + 1,
-                Comment    = dto.Comment.Trim(),
-                ArtworkUrl = artworkAtRevision,
-                CreatedAt  = Now,
-                CreatedBy  = CurrentUser,
+                Id                 = Guid.NewGuid().ToString(),
+                RevisionNo         = style.Revisions.Count + 1,
+                Comment            = dto.Comment.Trim(),
+                PreviousArtworkUrl = previousArtwork,
+                ArtworkUrl         = newArtworkUrl,
+                CreatedAt          = Now,
+                CreatedBy          = CurrentUser,
             };
 
-            // Replace list entirely — EF does not detect in-place .Add on JSON columns
             style.Revisions = new List<SampleStyleRevision>(style.Revisions) { newEntry };
             style.UpdatedAt = Now;
-
             _context.Entry(style).Property(e => e.Revisions).IsModified = true;
-
             await _context.SaveChangesAsync();
+            PopulateOriginalImagePath(style);
             return Ok(style);
         }
 
         // ==========================================
         // MARK CLIENT APPROVED
-        // Developer marks this style as client-approved
-        // after all revisions are done.
-        // Locks the revision thread.
-        // After this, "Submit to Admin" becomes available.
-        //
-        // PATCH /api/samplestyle/{id}/clientapprove
         // ==========================================
 
         [Authorize(Roles = "Admin,Developer")]
@@ -199,31 +198,20 @@ namespace CpPrinting.Api.Controllers
         {
             var style = await _context.SampleStyles.FindAsync(id);
             if (style == null) return NotFound();
-
             if (style.SubmittedToAdmin)
                 return BadRequest("Cannot change client approval after submission to admin.");
 
-            // Toggle — allows dev to undo if clicked by mistake (before submission)
             style.ClientApproved   = !style.ClientApproved;
             style.ClientApprovedAt = style.ClientApproved ? Now : null;
             style.ClientApprovedBy = style.ClientApproved ? CurrentUser : null;
             style.UpdatedAt        = Now;
-
             await _context.SaveChangesAsync();
+            PopulateOriginalImagePath(style);
             return Ok(style);
         }
 
         // ==========================================
         // SUBMIT TO ADMIN
-        // Developer submits after client approval.
-        // The latest revision comment + number are
-        // already on the record — admin sees full history.
-        // Requires: RC Meeting Date + Bulk Qty.
-        //
-        // PATCH /api/samplestyle/{id}/submit
-        // Body: { "rcMeetingDate": "...", "bulkQty": "1000",
-        //         "boardSet": "...", "acNumber": "...",
-        //         "developerComments": "..." }
         // ==========================================
 
         [Authorize(Roles = "Admin,Developer")]
@@ -233,68 +221,42 @@ namespace CpPrinting.Api.Controllers
         {
             var style = await _context.SampleStyles.FindAsync(id);
             if (style == null) return NotFound();
+            if (!style.ClientApproved)   return BadRequest("Style must be client-approved before submitting to admin.");
+            if (style.SubmittedToAdmin)  return BadRequest("Already submitted to admin.");
+            if (string.IsNullOrWhiteSpace(dto.RcMeetingDate)) return BadRequest("RC Meeting Date is required.");
+            if (string.IsNullOrWhiteSpace(dto.BulkQty))       return BadRequest("Bulk Qty is required.");
 
-            if (!style.ClientApproved)
-                return BadRequest("Style must be client-approved before submitting to admin.");
-            if (style.SubmittedToAdmin)
-                return BadRequest("Already submitted to admin.");
-            if (string.IsNullOrWhiteSpace(dto.RcMeetingDate))
-                return BadRequest("RC Meeting Date is required.");
-            if (string.IsNullOrWhiteSpace(dto.BulkQty))
-                return BadRequest("Bulk Qty is required.");
+            style.RcMeetingDate     = dto.RcMeetingDate.Trim();
+            style.BoardSet          = dto.BoardSet?.Trim();
+            style.BulkQty           = dto.BulkQty.Trim();
+            style.DeveloperComments = dto.DeveloperComments?.Trim();
+            style.SubmittedToAdmin  = true;
+            style.SubmittedAt       = Now;
+            style.AdminStatus       = "Pending";
+            style.UpdatedAt         = Now;
 
-            style.RcMeetingDate      = dto.RcMeetingDate.Trim();
-            style.BoardSet           = dto.BoardSet?.Trim();
-            style.BulkQty            = dto.BulkQty.Trim();
-            style.DeveloperComments  = dto.DeveloperComments?.Trim();
-            style.SubmittedToAdmin   = true;
-            style.SubmittedAt        = Now;
-            style.AdminStatus        = "Pending";
-            style.UpdatedAt          = Now;
-
-            // ── Create Submission record immediately so admin can see it ──────
-            // Without this, ApproveSubmission page shows 0 found because it
-            // queries the Submissions table, not SampleStyles.
-            var existingSubmission = await _context.Submissions
-                .FirstOrDefaultAsync(s => s.Id == style.Id);
-
-            if (existingSubmission == null)
+            var existing = await _context.Submissions.FirstOrDefaultAsync(s => s.Id == style.Id);
+            if (existing == null)
             {
-                // Build comment from latest revision if available
-                var latestRev = style.Revisions?
-                    .OrderByDescending(r => r.RevisionNo)
-                    .FirstOrDefault();
-
+                var latestRev = style.Revisions?.OrderByDescending(r => r.RevisionNo).FirstOrDefault();
                 var comment = latestRev != null
                     ? $"Rev {latestRev.RevisionNo}: {latestRev.Comment}"
                     : style.DeveloperComments ?? $"Sample style submitted — {style.StyleNo} ({style.Component})";
-
                 _context.Submissions.Add(new SubmissionForm
                 {
-                    Id               = style.Id,
-                    StyleNo          = style.StyleNo,
-                    CustomerName     = style.Customer,
-                    SubmissionDate   = Now,
-                    Level            = "Sample",
-                    Comment          = comment,
-                    RevisionNo       = latestRev?.RevisionNo ?? 1,
-                    IsLatestRevision = true,
+                    Id = style.Id, StyleNo = style.StyleNo, CustomerName = style.Customer,
+                    SubmissionDate = Now, Level = "Sample", Comment = comment,
+                    RevisionNo = latestRev?.RevisionNo ?? 1, IsLatestRevision = true,
                 });
             }
 
             await _context.SaveChangesAsync();
+            PopulateOriginalImagePath(style);
             return Ok(style);
         }
 
         // ==========================================
         // ADMIN ACTION
-        // Admin approves or rejects a submitted style.
-        // On approval, bridges into Submissions + Approvals
-        // so the rest of the pipeline (StoreIn, CPI etc.)
-        // can see this style.
-        //
-        // PATCH /api/samplestyle/{id}/adminaction
-        // Body: { "status": "Approved", "remarks": "..." }
         // ==========================================
 
         [Authorize(Roles = "Admin")]
@@ -304,20 +266,15 @@ namespace CpPrinting.Api.Controllers
         {
             var style = await _context.SampleStyles.FindAsync(id);
             if (style == null) return NotFound();
+            if (!style.SubmittedToAdmin) return BadRequest("Style has not been submitted to admin yet.");
 
-            if (!style.SubmittedToAdmin)
-                return BadRequest("Style has not been submitted to admin yet.");
-
-            // Lock guard: once StoreIn records exist, decision is frozen
-            var hasStoreIn = await _context.StoreInRecords
-                .AnyAsync(s => s.SubmissionId == style.Id);
+            var hasStoreIn = await _context.StoreInRecords.AnyAsync(s => s.SubmissionId == style.Id);
             if (hasStoreIn)
                 return BadRequest("LOCKED: Store-In records already exist for this style. " +
                                   "Approval cannot be changed once goods have been received.");
 
             var allowed = new[] { "Approved", "Pending" };
-            if (!allowed.Contains(dto.Status))
-                return BadRequest("Status must be 'Approved' or 'Pending'.");
+            if (!allowed.Contains(dto.Status)) return BadRequest("Status must be 'Approved' or 'Pending'.");
 
             style.AdminStatus   = dto.Status;
             style.AdminRemarks  = dto.Remarks?.Trim();
@@ -325,175 +282,185 @@ namespace CpPrinting.Api.Controllers
             style.AdminActionBy = CurrentUser;
             style.UpdatedAt     = Now;
 
-            // ── Bridge: sync into Submissions + Approvals ─────────────────────
-            // Build a meaningful comment using the latest revision
-            var latestRevision = style.Revisions?
-                .OrderByDescending(r => r.RevisionNo)
-                .FirstOrDefault();
-
+            var latestRevision = style.Revisions?.OrderByDescending(r => r.RevisionNo).FirstOrDefault();
             var submissionComment = latestRevision != null
                 ? $"Rev {latestRevision.RevisionNo}: {latestRevision.Comment}"
                 : style.DeveloperComments ?? "Sample style approval";
 
-            var submission = await _context.Submissions
-                .FirstOrDefaultAsync(s => s.Id == style.Id);
-
+            var submission = await _context.Submissions.FirstOrDefaultAsync(s => s.Id == style.Id);
             if (submission == null)
             {
                 submission = new SubmissionForm
                 {
-                    Id               = style.Id,
-                    StyleNo          = style.StyleNo,
-                    CustomerName     = style.Customer,
-                    SubmissionDate   = style.SubmittedAt ?? Now,
-                    Level            = "Sample",
-                    Comment          = submissionComment,
-                    RevisionNo       = latestRevision?.RevisionNo ?? 1,
+                    Id = style.Id, StyleNo = style.StyleNo, CustomerName = style.Customer,
+                    SubmissionDate = style.SubmittedAt ?? Now, Level = "Sample",
+                    Comment = submissionComment, RevisionNo = latestRevision?.RevisionNo ?? 1,
                     IsLatestRevision = true,
                 };
                 _context.Submissions.Add(submission);
             }
 
-            var approval = await _context.Approvals
-                .FirstOrDefaultAsync(a => a.SubmissionId == style.Id);
-
+            var approval = await _context.Approvals.FirstOrDefaultAsync(a => a.SubmissionId == style.Id);
             if (dto.Status == "Approved")
             {
                 if (approval == null)
                 {
                     _context.Approvals.Add(new ApprovalRecord
                     {
-                        Id            = Guid.NewGuid().ToString(),
-                        SubmissionId  = style.Id,
-                        StyleNo       = style.StyleNo,
-                        CustomerName  = style.Customer,
-                        Level         = "Sample",
-                        RevisionNo    = latestRevision?.RevisionNo ?? 1,
-                        Status        = "Approved",
-                        BoardSet      = style.BoardSet,
-                        ApprovalCard  = style.AcNumber,
-                        RaMeetingDate = style.RcMeetingDate,
-                        BulkOrderQty  = style.BulkQty,
-                        ReviewedAt    = Now,
+                        Id = Guid.NewGuid().ToString(), SubmissionId = style.Id,
+                        StyleNo = style.StyleNo, CustomerName = style.Customer,
+                        Level = "Sample", RevisionNo = latestRevision?.RevisionNo ?? 1,
+                        Status = "Approved", BoardSet = style.BoardSet,
+                        ApprovalCard = style.AcNumber, RaMeetingDate = style.RcMeetingDate,
+                        BulkOrderQty = style.BulkQty, ReviewedAt = Now,
                     });
                 }
                 else
                 {
-                    approval.Status        = "Approved";
-                    approval.BoardSet      = style.BoardSet;
-                    approval.ApprovalCard  = style.AcNumber;
-                    approval.RaMeetingDate = style.RcMeetingDate;
-                    approval.BulkOrderQty  = style.BulkQty;
-                    approval.ReviewedAt    = Now;
-                    approval.StyleNo       = style.StyleNo;
-                    approval.CustomerName  = style.Customer;
+                    approval.Status = "Approved"; approval.BoardSet = style.BoardSet;
+                    approval.ApprovalCard = style.AcNumber; approval.RaMeetingDate = style.RcMeetingDate;
+                    approval.BulkOrderQty = style.BulkQty; approval.ReviewedAt = Now;
+                    approval.StyleNo = style.StyleNo; approval.CustomerName = style.Customer;
                 }
             }
             else if (approval != null)
             {
-                approval.Status        = "Pending";
-                approval.BoardSet      = null;
-                approval.ApprovalCard  = null;
-                approval.RaMeetingDate = null;
-                approval.BulkOrderQty  = null;
-                approval.ReviewedAt    = Now;
+                approval.Status = "Pending"; approval.BoardSet = null;
+                approval.ApprovalCard = null; approval.RaMeetingDate = null;
+                approval.BulkOrderQty = null; approval.ReviewedAt = Now;
             }
 
             await _context.SaveChangesAsync();
+            PopulateOriginalImagePath(style);
             return Ok(style);
         }
 
         // ==========================================
-        // CREATE BULK REVISION (extra qty)
-        // Used when client increases bulk qty after
-        // the style is already approved.
-        // Developer enters the EXTRA qty only.
-        // System sums all revisions for total bulk.
+        // ADD EXTRA BULK QTY / CHANGE BODY COLOUR
+        // PATCH /api/samplestyle/{id}/revise
         //
-        // POST /api/samplestyle/{id}/revise
-        // Body: { "extraBulkQty": "500", "rcMeetingDate": "...",
-        //         "comments": "Second order from client" }
+        // FIX: This now UPDATES the existing ApprovalRecord instead of
+        // creating new SampleStyle + Submission + Approval records.
+        //
+        // The extra qty is added directly to the existing BulkOrderQty.
+        // Result: ONE approval, ONE bulk qty, ONE card in Store-In.
+        //
+        // Example: existing BulkOrderQty=500, extraBulkQty=100 → new BulkOrderQty=600
         // ==========================================
 
         [Authorize(Roles = "Admin,Developer")]
-        [HttpPost("{id}/revise")]
-        public async Task<ActionResult<SampleStyle>> CreateBulkRevision(
+        [HttpPatch("{id}/revise")]
+        public async Task<ActionResult<SampleStyle>> AddExtraBulk(
             string id, [FromBody] ReviseStyleDto dto)
         {
-            var source = await _context.SampleStyles.FindAsync(id);
-            if (source == null) return NotFound();
+            var style = await _context.SampleStyles.FindAsync(id);
+            if (style == null) return NotFound();
 
-            if (source.AdminStatus != "Approved")
-                return BadRequest("Only approved styles can be revised.");
+            if (style.AdminStatus != "Approved")
+                return BadRequest("Only approved styles can have extra bulk added.");
 
             if (string.IsNullOrWhiteSpace(dto.ExtraBulkQty) ||
                 !int.TryParse(dto.ExtraBulkQty, out var extraQty) || extraQty <= 0)
                 return BadRequest("Extra Bulk Qty must be a positive number.");
 
-            var existingCount = await _context.SampleStyles
-                .CountAsync(s => s.StyleNo   == source.StyleNo
-                              && s.Customer  == source.Customer
-                              && s.Component == source.Component);
+            // Find the existing approval for this style
+            var approval = await _context.Approvals.FirstOrDefaultAsync(a => a.SubmissionId == style.Id);
+            if (approval == null)
+                return BadRequest("No approval record found for this style. Contact admin.");
 
-            var newStyle = new SampleStyle
+            if (approval.Status != "Approved")
+                return BadRequest("Approval is not in Approved status.");
+
+            // Calculate new total
+            var currentBulk = int.TryParse(approval.BulkOrderQty, out var cb) ? cb : 0;
+            var newTotal = currentBulk + extraQty;
+
+            // Validate: cannot set total below already received
+            var totalAlreadyReceived = await _context.StoreInRecords
+                .Where(s => s.SubmissionId == style.Id)
+                .SumAsync(s => s.InQty);
+
+            if (newTotal < totalAlreadyReceived)
+                return BadRequest(
+                    $"Cannot set total bulk to {newTotal}: already received {totalAlreadyReceived} units. " +
+                    $"Extra qty would result in a total less than already received.");
+
+            var oldBulk     = approval.BulkOrderQty;
+            var oldColour   = style.BodyColour;
+            var colourChanged = !string.IsNullOrWhiteSpace(dto.NewBodyColour) &&
+                                dto.NewBodyColour.Trim() != style.BodyColour;
+
+            // Update the existing ApprovalRecord — no new records created
+            approval.BulkOrderQty = newTotal.ToString();
+            approval.ReviewedAt   = Now;
+
+            // Update SampleStyle display field and optionally body colour
+            style.BulkQty   = newTotal.ToString();
+            style.UpdatedAt = Now;
+
+            if (colourChanged)
+                style.BodyColour = dto.NewBodyColour!.Trim();
+
+            // Record the change as a note in DeveloperComments
+            var note = $"[{Now}] Extra bulk +{extraQty} added by {CurrentUser}. " +
+                       $"Total: {oldBulk} → {newTotal}.";
+            if (colourChanged)
+                note += $" Colour: {oldColour} → {dto.NewBodyColour!.Trim()}.";
+            if (!string.IsNullOrWhiteSpace(dto.Comments))
+                note += $" Note: {dto.Comments.Trim()}";
+
+            style.DeveloperComments = string.IsNullOrWhiteSpace(style.DeveloperComments)
+                ? note
+                : style.DeveloperComments + "\n" + note;
+
+            // Also update the linked Submission comment for audit trail.
+            // IMPORTANT: Restore IsLatestRevision = true on the original submission.
+            // The old POST /revise (now replaced) incorrectly set this to false, blocking
+            // Store-In with "Only the latest approved revision can move to Stores."
+            // This self-heals that data corruption every time extra bulk is added.
+            var submission = await _context.Submissions.FirstOrDefaultAsync(s => s.Id == style.Id);
+            if (submission != null)
             {
-                Id                = Guid.NewGuid().ToString(),
-                DevelopmentJobId  = source.DevelopmentJobId,
-                Customer          = source.Customer,
-                StyleNo           = source.StyleNo,
-                Season            = source.Season,
-                PrintingTechnique = source.PrintingTechnique,
-                BodyColour        = source.BodyColour,
-                PrintColour       = source.PrintColour,
-                PrintColourQty    = source.PrintColourQty,
-                WashingStandard   = source.WashingStandard,
-                Component         = source.Component,
-                ImagePath         = source.ImagePath,
-                BulkQty           = dto.ExtraBulkQty.Trim(),
-                RcMeetingDate     = dto.RcMeetingDate?.Trim() ?? source.RcMeetingDate,
-                AcNumber          = dto.AcNumber?.Trim()      ?? source.AcNumber,
-                BoardSet          = dto.BoardSet?.Trim()       ?? source.BoardSet,
-                DeveloperComments = dto.Comments?.Trim(),
-                Revisions         = new List<SampleStyleRevision>(),
-                // Auto client-approved and submitted — style already approved
-                ClientApproved    = true,
-                ClientApprovedAt  = Now,
-                ClientApprovedBy  = CurrentUser,
-                SubmittedToAdmin  = true,
-                SubmittedAt       = Now,
-                AdminStatus       = "Pending",
-                CreatedAt         = Now,
-                UpdatedAt         = Now,
-            };
-
-            _context.SampleStyles.Add(newStyle);
-
-            var revisionNo = existingCount + 1;
-            _context.Submissions.Add(new SubmissionForm
-            {
-                Id               = newStyle.Id,
-                StyleNo          = newStyle.StyleNo,
-                CustomerName     = newStyle.Customer,
-                SubmissionDate   = Now,
-                Level            = "Sample",
-                Comment          = $"Bulk revision {revisionNo} — Extra qty: {dto.ExtraBulkQty}",
-                RevisionNo       = revisionNo,
-                IsLatestRevision = false,
-            });
+                submission.Comment          = submission.Comment + $" | +{extraQty} extra bulk added {Now}";
+                submission.IsLatestRevision = true;  // restore — this IS the canonical submission
+            }
 
             await _context.SaveChangesAsync();
-            return Ok(newStyle);
+
+            // Sync denormalized StoreInRecord.BulkQty display fields
+            try
+            {
+                await SyncStoreInBulkQty(style.Id, newTotal, totalAlreadyReceived);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[SampleStyleController] SyncStoreInBulkQty failed (non-fatal): {ex.Message}");
+            }
+
+            PopulateOriginalImagePath(style);
+            return Ok(style);
+        }
+
+        // ── Sync denormalized display fields on StoreInRecords ────────────────
+        // Called after bulk qty changes. Non-fatal if it fails.
+        private async Task SyncStoreInBulkQty(string submissionId, int newBulkQty, int totalAlreadyReceived)
+        {
+            var storeInRecords = await _context.StoreInRecords
+                .Where(s => s.SubmissionId == submissionId)
+                .ToListAsync();
+
+            foreach (var record in storeInRecords)
+            {
+                record.BulkQty        = newBulkQty;
+                record.BalanceBulkQty = Math.Max(0, newBulkQty - totalAlreadyReceived);
+            }
+
+            if (storeInRecords.Any())
+                await _context.SaveChangesAsync();
         }
 
         // ==========================================
-        // DELETE
-        // ==========================================
-
-        // ==========================================
         // REVISION ARTWORK UPLOAD
-        // POST /api/samplestyle/revisionimage
-        // Separate from the main image upload — returns full URL.
-        // Called when developer uploads a revision artwork.
         // ==========================================
 
         [Authorize(Roles = "Admin,Developer")]
@@ -501,10 +468,8 @@ namespace CpPrinting.Api.Controllers
         [RequestSizeLimit(10_485_760)]
         public async Task<ActionResult> UploadRevisionImage(IFormFile file)
         {
-            if (file == null || file.Length == 0)
-                return BadRequest("No file uploaded.");
-            if (file.Length > MaxImageBytes)
-                return BadRequest("File exceeds 10 MB limit.");
+            if (file == null || file.Length == 0)     return BadRequest("No file uploaded.");
+            if (file.Length > MaxImageBytes)           return BadRequest("File exceeds 10 MB limit.");
             if (!AllowedImageTypes.Contains(file.ContentType.ToLower()))
                 return BadRequest("Only JPEG, PNG, and WebP images are allowed.");
 
@@ -514,18 +479,15 @@ namespace CpPrinting.Api.Controllers
             var ext      = Path.GetExtension(file.FileName).ToLowerInvariant();
             var fileName = $"rev_{Guid.NewGuid()}{ext}";
             var filePath = Path.Combine(dir, fileName);
-
             using (var stream = System.IO.File.Create(filePath))
                 await file.CopyToAsync(stream);
 
-            // Return full URL so it works as a plain <img src> everywhere
             var baseUrl = $"{Request.Scheme}://{Request.Host}";
             return Ok(new { url = $"{baseUrl}/uploads/revisions/{fileName}" });
         }
 
         // ==========================================
         // SERVE SAMPLE IMAGE
-        // GET /api/samplestyle/image?path=/uploads/samples/xyz.jpg
         // ==========================================
 
         [HttpGet("image")]
@@ -533,17 +495,15 @@ namespace CpPrinting.Api.Controllers
         {
             if (string.IsNullOrWhiteSpace(path) || !path.StartsWith("/uploads/"))
                 return BadRequest("Invalid path.");
-
             var filePath = Path.Combine(_env.WebRootPath ?? _env.ContentRootPath, path.TrimStart('/'));
             if (!System.IO.File.Exists(filePath)) return NotFound();
-
             var ext = Path.GetExtension(filePath).ToLowerInvariant();
             var ct  = ext switch
             {
                 ".jpg" or ".jpeg" => "image/jpeg",
-                ".png"            => "image/png",
-                ".webp"           => "image/webp",
-                _                 => "application/octet-stream",
+                ".png"  => "image/png",
+                ".webp" => "image/webp",
+                _       => "application/octet-stream",
             };
             return PhysicalFile(filePath, ct);
         }
@@ -554,13 +514,11 @@ namespace CpPrinting.Api.Controllers
         {
             var style = await _context.SampleStyles.FindAsync(id);
             if (style == null) return NotFound();
-
             if (!string.IsNullOrEmpty(style.ImagePath))
             {
-                var filePath = Path.Combine(_env.WebRootPath ?? _env.ContentRootPath, style.ImagePath.TrimStart('/'));
-                if (System.IO.File.Exists(filePath)) System.IO.File.Delete(filePath);
+                var fp = Path.Combine(_env.WebRootPath ?? _env.ContentRootPath, style.ImagePath.TrimStart('/'));
+                if (System.IO.File.Exists(fp)) System.IO.File.Delete(fp);
             }
-
             _context.SampleStyles.Remove(style);
             await _context.SaveChangesAsync();
             return NoContent();
@@ -568,13 +526,12 @@ namespace CpPrinting.Api.Controllers
     }
 
     // ==========================================
-    // DTOs
+    // DTOs — original names preserved
     // ==========================================
 
     public class AddRevisionDto
     {
         public string  Comment    { get; set; } = string.Empty;
-        /// <summary>Optional — full URL of the revision artwork. Replaces current ImagePath.</summary>
         public string? ArtworkUrl { get; set; }
     }
 
@@ -588,12 +545,17 @@ namespace CpPrinting.Api.Controllers
 
     public class ReviseStyleDto
     {
-        /// <summary>Extra bulk qty only — added on top of existing approved qty.</summary>
+        /// <summary>Extra qty to add on top of the existing approved bulk.</summary>
         public string  ExtraBulkQty  { get; set; } = string.Empty;
         public string? RcMeetingDate { get; set; }
         public string? AcNumber      { get; set; }
         public string? BoardSet      { get; set; }
         public string? Comments      { get; set; }
+        /// <summary>
+        /// Optional. If provided, replaces the existing body colour.
+        /// Leave null/empty to keep the existing colour unchanged.
+        /// </summary>
+        public string? NewBodyColour { get; set; }
     }
 
     public class AdminActionDto
