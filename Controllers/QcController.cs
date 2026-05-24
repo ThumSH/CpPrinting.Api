@@ -56,7 +56,7 @@ namespace CpPrinting.Api.Controllers
                     RevisionNo = r.RevisionNo,
                     StyleNo = r.StyleNo ?? string.Empty,
                     CustomerName = r.CustomerName ?? string.Empty,
-                    ScheduleNo = r.ScheduleNo,
+                    ScheduleNo = r.ScheduleNo ?? string.Empty,
                     BodyColour = r.BodyColour ?? string.Empty,
                     PrintColour = r.PrintColour ?? string.Empty,
                     Components = r.Components ?? string.Empty,
@@ -140,13 +140,13 @@ namespace CpPrinting.Api.Controllers
 
             // Backend truth — all nullable-safe
             report.SubmissionId = storeInRecord.SubmissionId;
-            report.RevisionNo = storeInRecord.RevisionNo;
-            report.StyleNo = storeInRecord.StyleNo ?? string.Empty;
-            report.Customer = storeInRecord.CustomerName ?? string.Empty;
-            report.ScheduleNo = storeInRecord.ScheduleNo;
-            report.BodyColour = storeInRecord.BodyColour ?? string.Empty;
-            report.PrintColour = storeInRecord.PrintColour ?? string.Empty;
-            report.ReceivedQty = storeInRecord.InQty;
+            report.RevisionNo   = storeInRecord.RevisionNo;
+            report.StyleNo      = storeInRecord.StyleNo      ?? string.Empty;
+            report.Customer     = storeInRecord.CustomerName ?? string.Empty;
+            report.ScheduleNo   = storeInRecord.ScheduleNo   ?? string.Empty;
+            report.BodyColour   = storeInRecord.BodyColour   ?? string.Empty;
+            report.PrintColour  = storeInRecord.PrintColour  ?? string.Empty;
+            report.ReceivedQty  = storeInRecord.InQty;
 
             if (string.IsNullOrWhiteSpace(report.SummaryDate))
                 report.SummaryDate = report.Date;
@@ -211,7 +211,7 @@ namespace CpPrinting.Api.Controllers
             existing.RevisionNo = storeInRecord.RevisionNo;
             existing.StyleNo = storeInRecord.StyleNo ?? string.Empty;
             existing.Customer = storeInRecord.CustomerName ?? string.Empty;
-            existing.ScheduleNo = storeInRecord.ScheduleNo;
+            existing.ScheduleNo = storeInRecord.ScheduleNo ?? string.Empty;
             existing.BodyColour = storeInRecord.BodyColour ?? string.Empty;
             existing.PrintColour = storeInRecord.PrintColour ?? string.Empty;
             existing.ReceivedQty = storeInRecord.InQty;

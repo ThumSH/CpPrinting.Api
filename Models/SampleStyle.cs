@@ -1,50 +1,74 @@
 // Models/SampleStyle.cs
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace CpPrinting.Api.Models
 {
     // ── Revision entry ────────────────────────────────────────────────────────
-    // Each client feedback = one revision. Dev adds comment + optionally
-    // replaces the artwork. Auto-numbered 1, 2, 3...
+    // DEPLOYMENT NOTE:
+    //   PreviousArtworkUrl lives inside the Revisions JSON column — no DB migration needed.
+    //   ArtworkUrl semantics changed: null now means "no new artwork this revision"
+    //   (previously it was always set to either the new URL or the existing ImagePath).
+    //   Old revision records in the DB still have ArtworkUrl set — they continue to render.
+    //   New revisions without a new upload will have ArtworkUrl = null and show nothing.
+    //   This is the correct, intended behavior.
     public class SampleStyleRevision
     {
-        public string  Id         { get; set; } = Guid.NewGuid().ToString();
-        public int     RevisionNo { get; set; }
-        public string  Comment    { get; set; } = string.Empty;
-        // Artwork at time of this revision (may differ from the original ImagePath)
+        public string  Id              { get; set; } = Guid.NewGuid().ToString();
+        public int     RevisionNo      { get; set; }
+        public string  Comment         { get; set; } = string.Empty;
+
+        /// <summary>
+        /// The artwork active BEFORE this revision. Stored in the Revisions JSON
+        /// column — zero DB migration required.
+        /// </summary>
+        public string? PreviousArtworkUrl { get; set; }
+
+        /// <summary>
+        /// New artwork uploaded WITH this revision. Null when no artwork changed.
+        /// When non-null, style.ImagePath is updated to this value.
+        /// </summary>
         public string? ArtworkUrl { get; set; }
-        public string  CreatedAt  { get; set; } = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm");
-        public string  CreatedBy  { get; set; } = string.Empty;
+
+        public string  CreatedAt { get; set; } = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm");
+        public string  CreatedBy { get; set; } = string.Empty;
     }
 
     // ── Sample Style ──────────────────────────────────────────────────────────
-    // One record per component per style.
-    // AD001-Front and AD001-Back are two separate rows.
-    // A style+component can have multiple body colours — stored as comma-separated.
     public class SampleStyle
     {
         public string Id { get; set; } = string.Empty;
 
-        // ── Linked job ────────────────────────────────────────────────────────
         public string DevelopmentJobId  { get; set; } = string.Empty;
         public string Customer          { get; set; } = string.Empty;
         public string StyleNo           { get; set; } = string.Empty;
         public string Season            { get; set; } = string.Empty;
         public string PrintingTechnique { get; set; } = string.Empty;
 
-        public string BodyColour     { get; set; } = string.Empty;
-        public string PrintColour    { get; set; } = string.Empty;
-        public string PrintColourQty { get; set; } = string.Empty;
+        public string BodyColour      { get; set; } = string.Empty;
+        public string PrintColour     { get; set; } = string.Empty;
+        public string PrintColourQty  { get; set; } = string.Empty;
         public string WashingStandard { get; set; } = string.Empty;
 
-        /// <summary>"Front" | "Back" | "Sleeve" | "Pocket" | "Waistband" | "Other"</summary>
         public string Component { get; set; } = string.Empty;
 
-        // ── Current artwork ───────────────────────────────────────────────────
-        // Always reflects the latest revision artwork (or the original if no revision).
+        // ── Artwork ───────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// [NotMapped] — NOT stored in DB, no migration required.
+        /// Computed by the controller on each response: derived from the first
+        /// revision's PreviousArtworkUrl when revisions exist, otherwise equals
+        /// ImagePath. Sent in JSON so the frontend can show "original vs current".
+        /// </summary>
+        [NotMapped]
+        public string? OriginalImagePath { get; set; }
+
+        /// <summary>
+        /// The current (latest) artwork URL. Persisted to DB. Updated when a
+        /// revision uploads a new artwork.
+        /// </summary>
         public string? ImagePath { get; set; }
 
-        // ── Revision history (JSON column) ────────────────────────────────────
-        // Each entry captures the client comment + artwork at that revision.
-        // Register in AppDbContext.OnModelCreating() — see bottom of file.
+        // ── Revision history (stored as JSON column) ──────────────────────────
         public List<SampleStyleRevision> Revisions { get; set; } = new();
 
         // ── Developer workflow ────────────────────────────────────────────────
@@ -68,27 +92,7 @@ namespace CpPrinting.Api.Models
         public bool    SubmittedToAdmin { get; set; } = false;
         public string? SubmittedAt      { get; set; }
 
-        // ── Timestamps ───────────────────────────────────────────────────────
         public string CreatedAt { get; set; } = string.Empty;
         public string UpdatedAt { get; set; } = string.Empty;
     }
 }
-
-// ==========================================
-// AppDbContext.OnModelCreating() — ADD THIS BLOCK
-// (after the existing DOWNTIME block, before closing brace)
-//
-//   modelBuilder.Entity<SampleStyle>()
-//       .Property(e => e.Revisions)
-//       .HasConversion(
-//           v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
-//           v => string.IsNullOrWhiteSpace(v)
-//               ? new List<SampleStyleRevision>()
-//               : JsonSerializer.Deserialize<List<SampleStyleRevision>>(v,
-//                    (JsonSerializerOptions?)null) ?? new()
-//       );
-//
-// Then run:
-//   dotnet ef migrations add AddRevisionArtwork
-//   dotnet ef database update --connection "Server=192.168.1.100;..."
-// ==========================================

@@ -28,9 +28,6 @@ namespace CpPrinting.Api.Controllers
         // ==========================================
         // ARTWORK UPLOAD
         // POST api/development/artwork
-        // Saves to wwwroot/uploads/artworks/ — returns the server URL path.
-        // Called from frontend BEFORE submitting the job form so we get a
-        // real persistent URL instead of a blob:// that dies on reload.
         // ==========================================
 
         [Authorize(Roles = "Developer,Admin")]
@@ -40,30 +37,27 @@ namespace CpPrinting.Api.Controllers
         {
             if (file == null || file.Length == 0)
                 return BadRequest("No file uploaded.");
-
             if (file.Length > MaxImageBytes)
                 return BadRequest("File exceeds 10 MB limit.");
-
             if (!AllowedImageTypes.Contains(file.ContentType.ToLower()))
                 return BadRequest("Only JPEG, PNG, and WebP images are allowed.");
 
             var uploadsDir = Path.Combine(_env.WebRootPath ?? _env.ContentRootPath, "uploads", "artworks");
             Directory.CreateDirectory(uploadsDir);
 
-            var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+            var ext      = Path.GetExtension(file.FileName).ToLowerInvariant();
             var fileName = $"artwork_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}{ext}";
             var filePath = Path.Combine(uploadsDir, fileName);
 
             using (var stream = System.IO.File.Create(filePath))
                 await file.CopyToAsync(stream);
 
-            // Return full absolute URL so it works as a plain <img src> everywhere
             var baseUrl = $"{Request.Scheme}://{Request.Host}";
             return Ok(new { url = $"{baseUrl}/uploads/artworks/{fileName}" });
         }
 
         // ==========================================
-        // WORKSPACE JOBS ENDPOINTS
+        // WORKSPACE JOBS
         // ==========================================
 
         [HttpGet("jobs")]
@@ -77,6 +71,7 @@ namespace CpPrinting.Api.Controllers
         /// <summary>
         /// Creates a DevelopmentJob AND a linked SampleStyle.
         /// ArtworkPreviewUrl must be a server path from POST /artwork (not a blob URL).
+        /// OriginalImagePath is [NotMapped] and computed at response time by SampleStyleController.
         /// Returns: { job, sampleStyle }
         /// </summary>
         [Authorize(Roles = "Developer,Admin")]
@@ -88,26 +83,29 @@ namespace CpPrinting.Api.Controllers
 
             _context.DevelopmentJobs.Add(job);
 
+            // OriginalImagePath is [NotMapped] — not assigned here, not persisted.
+            // SampleStyleController.PopulateOriginalImagePath() derives it at response time.
             var sampleStyle = new SampleStyle
             {
-                Id = Guid.NewGuid().ToString(),
-                DevelopmentJobId = job.Id,
-                Customer = job.Customer,
-                StyleNo = job.StyleNo,
-                Season = job.Season,
+                Id                = Guid.NewGuid().ToString(),
+                DevelopmentJobId  = job.Id,
+                Customer          = job.Customer,
+                StyleNo           = job.StyleNo,
+                Season            = job.Season,
                 PrintingTechnique = job.PrintingTechnique,
-                BodyColour = job.BodyColour,
-                PrintColour = job.PrintColour,
-                PrintColourQty = job.PrintColourQty,
-                WashingStandard = job.WashingStandard,
-                Component = job.Component ?? string.Empty,
-                // Artwork URL flows directly into SampleStyle.ImagePath
-                ImagePath = !string.IsNullOrWhiteSpace(job.ArtworkPreviewUrl) ? job.ArtworkPreviewUrl : null,
-                ClientApproved = false,
-                SubmittedToAdmin = false,
-                AdminStatus = "Pending",
-                CreatedAt = Now,
-                UpdatedAt = Now,
+                BodyColour        = job.BodyColour,
+                PrintColour       = job.PrintColour,
+                PrintColourQty    = job.PrintColourQty,
+                WashingStandard   = job.WashingStandard,
+                Component         = job.Component ?? string.Empty,
+                ImagePath         = !string.IsNullOrWhiteSpace(job.ArtworkPreviewUrl)
+                                       ? job.ArtworkPreviewUrl
+                                       : null,
+                ClientApproved    = false,
+                SubmittedToAdmin  = false,
+                AdminStatus       = "Pending",
+                CreatedAt         = Now,
+                UpdatedAt         = Now,
             };
 
             _context.SampleStyles.Add(sampleStyle);
@@ -130,15 +128,17 @@ namespace CpPrinting.Api.Controllers
 
             if (linked != null)
             {
-                linked.Customer = job.Customer;
-                linked.StyleNo = job.StyleNo;
-                linked.Season = job.Season;
+                linked.Customer          = job.Customer;
+                linked.StyleNo           = job.StyleNo;
+                linked.Season            = job.Season;
                 linked.PrintingTechnique = job.PrintingTechnique;
-                linked.BodyColour = job.BodyColour;
-                linked.PrintColour = job.PrintColour;
-                linked.PrintColourQty = job.PrintColourQty;
-                linked.WashingStandard = job.WashingStandard;
-                linked.Component = job.Component ?? string.Empty;
+                linked.BodyColour        = job.BodyColour;
+                linked.PrintColour       = job.PrintColour;
+                linked.PrintColourQty    = job.PrintColourQty;
+                linked.WashingStandard   = job.WashingStandard;
+                linked.Component         = job.Component ?? string.Empty;
+                // Only update ImagePath if a new artwork URL was provided.
+                // OriginalImagePath is [NotMapped] — not set here.
                 if (!string.IsNullOrWhiteSpace(job.ArtworkPreviewUrl))
                     linked.ImagePath = job.ArtworkPreviewUrl;
                 linked.UpdatedAt = Now;
@@ -173,7 +173,7 @@ namespace CpPrinting.Api.Controllers
         }
 
         // ==========================================
-        // SUBMISSIONS ENDPOINTS — unchanged
+        // SUBMISSIONS
         // ==========================================
 
         [HttpGet("submissions")]
@@ -228,8 +228,8 @@ namespace CpPrinting.Api.Controllers
             var submission = await _context.Submissions.FindAsync(id);
             if (submission == null) return NotFound();
 
-            bool wasLatest = submission.IsLatestRevision;
-            string styleNo = submission.StyleNo;
+            bool wasLatest      = submission.IsLatestRevision;
+            string styleNo      = submission.StyleNo;
             string customerName = submission.CustomerName;
 
             _context.Submissions.Remove(submission);
@@ -253,7 +253,6 @@ namespace CpPrinting.Api.Controllers
         // ==========================================
         // SERVE ARTWORK IMAGE
         // GET /api/development/image?path=/uploads/artworks/xyz.jpg
-        // Needed because UseStaticFiles is not configured in Program.cs
         // ==========================================
 
         [HttpGet("image")]

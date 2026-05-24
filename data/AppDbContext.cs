@@ -1,3 +1,11 @@
+// data/AppDbContext.cs
+// DEPLOYMENT NOTE:
+//   SampleStyle.OriginalImagePath is marked [NotMapped] — no DB column, no migration required.
+//   It is computed at response time by SampleStyleController.PopulateOriginalImagePath().
+//
+//   SampleStyleRevision.PreviousArtworkUrl is stored inside the Revisions JSON column —
+//   no schema change needed; EF Core serializes it automatically.
+
 using Microsoft.EntityFrameworkCore;
 using CpPrinting.Api.Models;
 using System.Text.Json;
@@ -96,6 +104,9 @@ namespace CpPrinting.Api.Data
                     v => JsonSerializer.Deserialize<List<DowntimeEntry>>(v, (JsonSerializerOptions?)null)!
                 );
 
+            // SAMPLE STYLE: Revisions JSON
+            // NOTE: SampleStyleRevision now includes PreviousArtworkUrl — no schema change needed
+            // since it's serialized as JSON within the Revisions column.
             modelBuilder.Entity<SampleStyle>()
                 .Property(e => e.Revisions)
                 .HasConversion(
