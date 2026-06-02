@@ -52,6 +52,7 @@ namespace CpPrinting.Api.Controllers
                 PrintColour = record.PrintColour ?? string.Empty,
                 Components = record.Components ?? string.Empty,
                 Season = record.Season ?? string.Empty,
+                InAdNo = record.InAdNo ?? string.Empty,
                 ScheduleNo = record.ScheduleNo,
                 CutInDate = record.CutInDate ?? string.Empty,
                 BulkQty = record.BulkQty,
@@ -247,6 +248,9 @@ namespace CpPrinting.Api.Controllers
             if (string.IsNullOrWhiteSpace(request.SubmissionId))
                 return BadRequest("SubmissionId is required.");
 
+            if (string.IsNullOrWhiteSpace(request.InAdNo))
+                return BadRequest("IN-AD No is required.");
+
             // ScheduleNo is optional — only some styles use schedule tracking
             if (string.IsNullOrWhiteSpace(request.CutInDate))
                 return BadRequest("Cut In Date is required.");
@@ -363,6 +367,8 @@ namespace CpPrinting.Api.Controllers
                 PrintColour = sampleStyle?.PrintColour ?? job?.PrintColour,
                 Components  = sampleStyle?.Component   ?? job?.Component ?? string.Empty,
                 Season      = sampleStyle?.Season      ?? job?.Season,
+
+                InAdNo = request.InAdNo.Trim(),
                 ScheduleNo = request.ScheduleNo,
                 CutInDate = request.CutInDate,
                 BulkQty = approvedBulk,
@@ -445,6 +451,9 @@ namespace CpPrinting.Api.Controllers
             if (request.InQty <= 0)
                 return BadRequest("InQty must be greater than zero.");
 
+            if (string.IsNullOrWhiteSpace(request.InAdNo))
+                return BadRequest("IN-AD No is required.");
+
             if (request.Cuts == null || request.Cuts.Count == 0)
                 return BadRequest("At least one cut is required.");
 
@@ -520,6 +529,7 @@ namespace CpPrinting.Api.Controllers
             _context.CutRecords.RemoveRange(existing.Cuts);
 
             // --- Update parent fields ---
+            existing.InAdNo = request.InAdNo.Trim();
             existing.ScheduleNo = request.ScheduleNo;
             existing.CutInDate = request.CutInDate;
             existing.InQty = request.InQty;
@@ -533,6 +543,7 @@ namespace CpPrinting.Api.Controllers
             {
                 Id = Guid.NewGuid().ToString(),
                 StoreInRecordId = id,
+                SubmissionId = existing.SubmissionId,
                 CutNo = c.CutNo,
                 CutQty = c.CutQty,
                 Bundles = c.Bundles.Select(b => new BundleRecord

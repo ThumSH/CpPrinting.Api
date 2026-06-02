@@ -4,8 +4,8 @@ using System.ComponentModel.DataAnnotations.Schema;
 namespace CpPrinting.Api.Models
 {
     /// <summary>
-    /// Parent record: one Store-In entry per schedule received against a style.
-    /// IN Qty deducts from the global Bulk Qty for the style.
+    /// Parent record: one Store-In entry per schedule received against a style/component.
+    /// IN Qty deducts from the global Bulk Qty for the component submission.
     /// </summary>
     public class StoreInRecord
     {
@@ -24,43 +24,51 @@ namespace CpPrinting.Api.Models
         public string? Components { get; set; }
         public string? Season { get; set; }
 
-        [Required]
+        /// <summary>
+        /// IN-AD number entered during Store-In.
+        /// This is used only for Delivery Tracker display/reporting.
+        /// It does not affect stock balance, QC, production, or gatepass logic.
+        /// </summary>
+        public string? InAdNo { get; set; }
+
+        /// <summary>
+        /// Optional schedule number. Some styles may not use schedules.
+        /// </summary>
         public string ScheduleNo { get; set; } = string.Empty;
 
         public string? CutInDate { get; set; }
 
         /// <summary>
-        /// The approved bulk qty snapshot at time of entry (from ApprovalRecord).
+        /// The approved bulk qty snapshot at time of entry.
         /// </summary>
         public int BulkQty { get; set; }
 
         /// <summary>
-        /// Total qty received in THIS store-in entry. Deducts from global bulk balance.
+        /// Total qty received in this Store-In entry.
         /// </summary>
         public int InQty { get; set; }
 
         /// <summary>
-        /// Computed by backend: BulkQty - SUM(InQty) across ALL StoreInRecords for this SubmissionId.
+        /// Computed by backend: BulkQty - SUM(InQty) across all StoreInRecords for this SubmissionId.
         /// Stored as a denormalized snapshot for display convenience.
         /// </summary>
         public int BalanceBulkQty { get; set; }
 
         /// <summary>
-        /// Sum of all CutRecord.CutQty under this entry. Should equal InQty when fully cut.
+        /// Sum of all CutRecord.CutQty under this Store-In entry.
         /// </summary>
         public int TotalCutQty { get; set; }
 
         /// <summary>
-        /// InQty - TotalCutQty = qty received but not yet assigned to cuts.
+        /// InQty - TotalCutQty.
         /// </summary>
         public int UncutBalance { get; set; }
 
         /// <summary>
-        /// InQty minus qty already issued to production. This is the shelf stock.
+        /// InQty minus qty already issued to production.
         /// </summary>
         public int AvailableQty { get; set; }
 
-        // Navigation property — EF Core will load these
         public List<CutRecord> Cuts { get; set; } = new();
     }
 
@@ -82,18 +90,12 @@ namespace CpPrinting.Api.Models
         public string CutNo { get; set; } = string.Empty;
 
         /// <summary>
-        /// Which component-submission this cut belongs to.
-        /// Enables per-component bulk balance tracking.
-        /// Set at StoreIn creation time from the selected component.
+        /// Which component submission this cut belongs to.
         /// </summary>
         public string SubmissionId { get; set; } = string.Empty;
 
-        /// <summary>
-        /// Qty assigned to this cut. Sum of all cuts under a StoreIn must not exceed InQty.
-        /// </summary>
         public int CutQty { get; set; }
 
-        // Navigation property
         public List<BundleRecord> Bundles { get; set; } = new();
     }
 
@@ -122,8 +124,7 @@ namespace CpPrinting.Api.Models
     }
 
     /// <summary>
-    /// Production issue record — unchanged structure, but now references the parent StoreInRecord.
-    /// The CutNo field tells which cut this production issue is against.
+    /// Production issue record.
     /// </summary>
     public class StoreProductionRecord
     {

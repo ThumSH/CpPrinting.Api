@@ -26,30 +26,40 @@ namespace CpPrinting.Api.Controllers
 
         // ==========================================
         // ELIGIBLE STORE-IN ITEMS FOR CPI
-        // Now reads cut/bundle data from child tables
         // ==========================================
-
         [HttpGet("eligible-cpi")]
         public async Task<ActionResult<IEnumerable<EligibleCpiDto>>> GetEligibleCpiItems()
         {
-            var existingCpiStoreInIds = await _context.CpiReports
-                .Select(r => r.StoreInRecordId)
-                .ToListAsync();
+            var existingReports = await _context.CpiReports.ToListAsync();
 
             var eligibleRecords = await _context.StoreInRecords
                 .Include(r => r.Cuts)
                     .ThenInclude(c => c.Bundles)
-                .Where(r => !existingCpiStoreInIds.Contains(r.Id))
                 .OrderByDescending(r => r.CutInDate)
                 .ToListAsync();
 
-            var eligibleItems = eligibleRecords.Select(r =>
+            var eligibleItems = new List<EligibleCpiDto>();
+
+            foreach (var r in eligibleRecords)
             {
-                // Flatten cuts/bundles into summary fields for CPI display
+                // Check if there's an existing report for this Store-In
+                var existingCpi = existingReports.FirstOrDefault(c => c.StoreInRecordId == r.Id);
+
+                if (existingCpi != null)
+                {
+                    // If a report exists, verify if ALL cuts are already inspected
+                    var inspectedCuts = existingCpi.CutInspections?.Select(ci => ci.CutNo).ToHashSet() ?? new HashSet<string>();
+                    var hasUninspectedCuts = r.Cuts.Any(c => !inspectedCuts.Contains(c.CutNo));
+
+                    // If there are no uninspected cuts left, hide it from the eligible list
+                    if (!hasUninspectedCuts)
+                        continue;
+                }
+
                 var firstCut = r.Cuts.FirstOrDefault();
                 var firstBundle = firstCut?.Bundles.FirstOrDefault();
 
-                return new EligibleCpiDto
+                eligibleItems.Add(new EligibleCpiDto
                 {
                     StoreInRecordId = r.Id,
                     SubmissionId = r.SubmissionId,
@@ -63,16 +73,13 @@ namespace CpPrinting.Api.Controllers
                     Season = r.Season ?? string.Empty,
                     ReceivedQty = r.InQty,
                     CutInDate = r.CutInDate ?? string.Empty,
-                    // Aggregate cut/bundle info from child tables
                     CutCount = r.Cuts.Count,
                     TotalCutQty = r.Cuts.Sum(c => c.CutQty),
                     TotalBundleCount = r.Cuts.Sum(c => c.Bundles.Count),
-                    // For backward compat, provide first cut/bundle info
                     CutNo = firstCut?.CutNo ?? string.Empty,
                     Size = firstBundle?.Size ?? string.Empty,
                     BundleQty = firstBundle?.BundleQty ?? 0,
                     NumberRange = firstBundle?.NumberRange ?? string.Empty,
-                    // Full cuts data for the CPI grid
                     Cuts = r.Cuts.Select(c => new CpiCutDto
                     {
                         CutNo = c.CutNo,
@@ -85,8 +92,8 @@ namespace CpPrinting.Api.Controllers
                             NumberRange = b.NumberRange ?? string.Empty
                         }).ToList()
                     }).ToList()
-                };
-            }).ToList();
+                });
+            }
 
             return Ok(eligibleItems);
         }
@@ -94,7 +101,6 @@ namespace CpPrinting.Api.Controllers
         // ==========================================
         // CPI REPORTS
         // ==========================================
-
         [HttpGet("reports")]
         public async Task<ActionResult<IEnumerable<CPIReport>>> GetCPIReports()
         {
@@ -128,17 +134,38 @@ namespace CpPrinting.Api.Controllers
             if (linkedApproval == null || linkedApproval.Status != "Approved")
                 return BadRequest("Only approved latest revisions from Stores can be inspected in CPI.");
 
-            if (string.IsNullOrWhiteSpace(report.Id))
-                report.Id = Guid.NewGuid().ToString();
-
-            // Prevent duplicate CPI for same Store-In record
+            // ── GRACEFUL APPEND HANDLING ──
             var existingReport = await _context.CpiReports
                 .FirstOrDefaultAsync(r => r.StoreInRecordId == report.StoreInRecordId);
 
             if (existingReport != null)
-                return BadRequest("A CPI report already exists for this Store-In record.");
+            {
+                // Intercept the POST and safely update/append the data
+                existingReport.Date = report.Date;
+                existingReport.CpiQty = report.CpiQty;
+                existingReport.CutInspections = report.CutInspections;
+                existingReport.CuttingQty = report.CuttingQty;
+                existingReport.CheckedQty = report.CheckedQty;
+                existingReport.RejDamageQty = report.RejDamageQty;
+                existingReport.RejectionPercentage = report.RejectionPercentage;
+                existingReport.BalanceQty = report.BalanceQty;
+                existingReport.InspectionStatus = report.InspectionStatus;
+                existingReport.AppRej = report.InspectionStatus == "Passed" ? "Approved" : "Rejected";
+                existingReport.CheckedBy = report.CheckedBy;
+                existingReport.SummaryDate = string.IsNullOrWhiteSpace(report.SummaryDate) ? report.Date : report.SummaryDate;
+                existingReport.CpiAuditor = report.CpiAuditor;
 
-            // Backend truth — all nullable-safe
+                await _context.SaveChangesAsync();
+                
+                await _logger.Log(User, HttpContext, "Update", "CPI", existingReport.Id,
+                    $"Appended cuts to CPI report for {existingReport.StyleNo} — Status: {existingReport.InspectionStatus}");
+
+                return Ok(existingReport);
+            }
+
+            if (string.IsNullOrWhiteSpace(report.Id))
+                report.Id = Guid.NewGuid().ToString();
+
             report.SubmissionId = storeInRecord.SubmissionId;
             report.RevisionNo   = storeInRecord.RevisionNo;
             report.StyleNo      = storeInRecord.StyleNo      ?? string.Empty;
@@ -181,8 +208,6 @@ namespace CpPrinting.Api.Controllers
             if (storeInRecord == null)
                 return BadRequest("Linked Store-In record not found.");
 
-            // Update editable fields
-            // Guard: cannot revoke "Passed" status if production records already exist
             if (existing.InspectionStatus == "Passed" && report.InspectionStatus != "Passed")
             {
                 var hasProduction = await _context.StoreProductionRecords
@@ -206,7 +231,6 @@ namespace CpPrinting.Api.Controllers
             existing.SummaryDate = report.SummaryDate;
             existing.CpiAuditor = report.CpiAuditor;
 
-            // Re-apply backend truth (nullable-safe)
             existing.SubmissionId = storeInRecord.SubmissionId;
             existing.RevisionNo = storeInRecord.RevisionNo;
             existing.StyleNo = storeInRecord.StyleNo ?? string.Empty;
@@ -230,14 +254,12 @@ namespace CpPrinting.Api.Controllers
             var report = await _context.CpiReports.FindAsync(id);
             if (report == null) return NotFound();
 
-            // Block if production records exist for this store-in
             var hasProduction = await _context.StoreProductionRecords
                 .AnyAsync(p => p.StoreInRecordId == report.StoreInRecordId);
 
             if (hasProduction)
                 return BadRequest("Cannot delete: production records have been issued based on this QC pass.");
 
-            // Block if advice notes exist
             var hasAdviceNotes = await _context.AdviceNotes
                 .AnyAsync(a => a.StoreInRecordId == report.StoreInRecordId);
 
@@ -253,9 +275,6 @@ namespace CpPrinting.Api.Controllers
             return NoContent();
         }
 
-        /// <summary>
-        /// Returns which CPI reports have downstream dependencies.
-        /// </summary>
         [HttpGet("reports/locks")]
         public async Task<ActionResult> GetCpiLocks()
         {

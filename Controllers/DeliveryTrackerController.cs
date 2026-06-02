@@ -22,7 +22,6 @@ namespace CpPrinting.Api.Controllers
         /// <summary>
         /// Auto-generated delivery tracker report.
         /// Groups by Style + Schedule (Store-In record).
-        /// Each row = one Advice Note dispatched against production records for that store-in.
         /// </summary>
         [HttpGet("report")]
         public async Task<ActionResult<IEnumerable<DeliveryTrackerSummaryDto>>> GetDeliveryTrackerReport(
@@ -30,8 +29,9 @@ namespace CpPrinting.Api.Controllers
             [FromQuery] string? scheduleNo = null,
             [FromQuery] int? limit = null)
         {
-            // Build filtered store-in query based on params
+            // 1. DB OPTIMIZATION: Use AsNoTracking() for heavy read-only queries
             var siQuery = _context.StoreInRecords
+                .AsNoTracking()
                 .Include(s => s.Cuts)
                     .ThenInclude(c => c.Bundles)
                 .AsQueryable();
@@ -43,32 +43,46 @@ namespace CpPrinting.Api.Controllers
 
             var storeInRecords = await siQuery.ToListAsync();
 
-            // Load all advice notes
+            if (!storeInRecords.Any())
+                return Ok(new List<DeliveryTrackerSummaryDto>());
+
+            var storeInIds = storeInRecords.Select(s => s.Id).ToList();
+            var submissionIds = storeInRecords.Select(s => s.SubmissionId).ToList();
+
+            // 2. DB OPTIMIZATION: Only fetch Approvals we actually need.
+            // Safety check: Avoid SQL 2100 parameter limit crash if list is massive.
+            List<ApprovalRecord> approvals;
+            if (submissionIds.Count > 1500)
+                approvals = await _context.Approvals.AsNoTracking().ToListAsync();
+            else
+                approvals = await _context.Approvals.AsNoTracking()
+                    .Where(a => submissionIds.Contains(a.SubmissionId)).ToListAsync();
+
+            // 3. DB OPTIMIZATION: Only fetch specific Production Records
+            List<StoreProductionRecord> productionRecords;
+            if (storeInIds.Count > 1500)
+                productionRecords = await _context.StoreProductionRecords.AsNoTracking().ToListAsync();
+            else
+                productionRecords = await _context.StoreProductionRecords.AsNoTracking()
+                    .Where(p => storeInIds.Contains(p.StoreInRecordId)).ToListAsync();
+
+            var prodToStoreIn = productionRecords.ToDictionary(p => p.Id, p => p.StoreInRecordId);
+
+            // 4. Load advice notes (AsNoTracking to save memory).
             var adviceNotes = await _context.AdviceNotes
+                .AsNoTracking()
                 .OrderBy(a => a.DeliveryDate)
                 .ToListAsync();
-
-            // Load approvals for bulk qty
-            var approvals = await _context.Approvals.ToListAsync();
-
-            // Load all production records to link advice notes to store-in
-            var productionRecords = await _context.StoreProductionRecords.ToListAsync();
-
-            // Build a lookup: productionRecordId -> storeInRecordId
-            var prodToStoreIn = productionRecords.ToDictionary(p => p.Id, p => p.StoreInRecordId);
 
             // Group advice notes by store-in record
             var notesByStoreIn = new Dictionary<string, List<AdviceNoteRecord>>();
 
             foreach (var note in adviceNotes)
             {
-                // The note may have multiple production record IDs (comma-separated)
-                // or a direct storeInRecordId
                 var storeInId = note.StoreInRecordId;
 
                 if (string.IsNullOrEmpty(storeInId) && !string.IsNullOrEmpty(note.ProductionRecordId))
                 {
-                    // Try to resolve from first production record ID
                     var firstProdId = note.ProductionRecordId.Split(',').FirstOrDefault()?.Trim();
                     if (firstProdId != null && prodToStoreIn.TryGetValue(firstProdId, out var resolved))
                         storeInId = resolved;
@@ -82,7 +96,6 @@ namespace CpPrinting.Api.Controllers
                 notesByStoreIn[storeInId].Add(note);
             }
 
-            // Build summaries — one per store-in record that has advice notes
             var summaries = new List<DeliveryTrackerSummaryDto>();
 
             foreach (var storeIn in storeInRecords)
@@ -92,11 +105,9 @@ namespace CpPrinting.Api.Controllers
                 var notes = notesByStoreIn[storeIn.Id];
                 if (!notes.Any()) continue;
 
-                // Get bulk qty from approval
                 var approval = approvals.FirstOrDefault(a => a.SubmissionId == storeIn.SubmissionId);
                 var bulkQty = (approval != null && int.TryParse(approval.BulkOrderQty, out var bq)) ? bq : 0;
 
-                // Collect all sizes from bundles
                 var allSizes = storeIn.Cuts
                     .SelectMany(c => c.Bundles)
                     .Select(b => b.Size)
@@ -104,7 +115,6 @@ namespace CpPrinting.Api.Controllers
                     .OrderBy(s => SizeOrder(s))
                     .ToList();
 
-                // Build size lookup: cutNo -> size -> total bundle qty
                 var cutSizeQty = new Dictionary<string, Dictionary<string, int>>();
                 foreach (var cut in storeIn.Cuts)
                 {
@@ -123,8 +133,6 @@ namespace CpPrinting.Api.Controllers
                 foreach (var note in notes)
                 {
                     var noteRows = note.Rows?.Values?.ToList() ?? new List<AdviceNoteRow>();
-
-                    // Group by cutForm to get per-cut data
                     var cutGroups = noteRows.GroupBy(r => r.CutForm).ToList();
 
                     foreach (var cutGroup in cutGroups)
@@ -134,7 +142,6 @@ namespace CpPrinting.Api.Controllers
                         var fpoQty = bundlesInCut.Sum(b => b.TotalPcs);
                         var allowedPd = (int)Math.Ceiling(fpoQty * 0.1);
 
-                        // Per-size breakdown from the bundles in this cut
                         var sizeBreakdown = allSizes.Select(size =>
                         {
                             var bundlesForSize = bundlesInCut.Where(b => b.Size == size).ToList();
@@ -156,7 +163,7 @@ namespace CpPrinting.Api.Controllers
                             DeliveryDate = note.DeliveryDate,
                             StyleNo = storeIn.StyleNo ?? string.Empty,
                             Colour = storeIn.BodyColour ?? string.Empty,
-                            InAd = note.AdNo,
+                            InAd = storeIn.InAdNo ?? string.Empty,
                             Ad = note.AdNo,
                             ScheduleNo = storeIn.ScheduleNo,
                             FpoQty = fpoQty,
@@ -171,7 +178,6 @@ namespace CpPrinting.Api.Controllers
                     }
                 }
 
-                // Size totals across all rows
                 var sizeTotals = allSizes.Select(size => new DeliveryTrackerSizeData
                 {
                     Size = size,
@@ -220,24 +226,19 @@ namespace CpPrinting.Api.Controllers
             return Ok(summaries);
         }
 
-        // ==========================================
-        // SAVED TRACKER REPORTS
-        // ==========================================
-
-        /// <summary>
-        /// Lightweight endpoint — returns distinct styleNo + scheduleNo combinations.
-        /// Used by the dropdowns on the tracker page without loading the full report.
-        /// </summary>
         [HttpGet("filters")]
         public async Task<ActionResult> GetTrackerFilters()
         {
+            // DB OPTIMIZATION: Select strictly the columns needed, NO memory overhead.
             var adviceNotes = await _context.AdviceNotes
+                .AsNoTracking()
                 .Select(a => new { a.StoreInRecordId, a.ProductionRecordId })
                 .ToListAsync();
 
             var storeInIdsWithDispatch = new HashSet<string>();
 
             var prodMap = await _context.StoreProductionRecords
+                .AsNoTracking()
                 .Select(p => new { p.Id, p.StoreInRecordId })
                 .ToListAsync();
             
@@ -247,7 +248,6 @@ namespace CpPrinting.Api.Controllers
             {
                 var storeInId = note.StoreInRecordId;
                 
-                // Fallback resolver if directly saved StoreInRecordId is missing
                 if (string.IsNullOrEmpty(storeInId) && !string.IsNullOrEmpty(note.ProductionRecordId))
                 {
                     var firstProdId = note.ProductionRecordId.Split(',').FirstOrDefault()?.Trim();
@@ -264,6 +264,7 @@ namespace CpPrinting.Api.Controllers
             }
 
             var combos = await _context.StoreInRecords
+                .AsNoTracking()
                 .Where(s => storeInIdsWithDispatch.Contains(s.Id))
                 .Select(s => new { StyleNo = s.StyleNo ?? "", ScheduleNo = s.ScheduleNo ?? "" })
                 .Distinct()
@@ -276,13 +277,11 @@ namespace CpPrinting.Api.Controllers
         public async Task<ActionResult<IEnumerable<DeliveryTrackerReport>>> GetSavedReports()
         {
             return await _context.DeliveryTrackers
+                .AsNoTracking()
                 .OrderByDescending(r => r.CreatedAt)
                 .ToListAsync();
         }
 
-        /// <summary>
-        /// Save a delivery tracker report snapshot to the database.
-        /// </summary>
         [HttpPost("save")]
         public async Task<ActionResult<DeliveryTrackerReport>> SaveTrackerReport(DeliveryTrackerReport report)
         {
@@ -292,14 +291,12 @@ namespace CpPrinting.Api.Controllers
             if (string.IsNullOrWhiteSpace(report.StyleNo))
                 return BadRequest("StyleNo is required.");
 
-            // Check if a saved report already exists for this store-in
             var existing = await _context.DeliveryTrackers
                 .FirstOrDefaultAsync(r => r.StoreInRecordId == report.StoreInRecordId
                                          && r.FpoNo == report.FpoNo);
 
             if (existing != null)
             {
-                // Update existing report
                 existing.OrderQty = report.OrderQty;
                 existing.DeliveryQty = report.DeliveryQty;
                 existing.BalanceQty = report.BalanceQty;
@@ -312,7 +309,6 @@ namespace CpPrinting.Api.Controllers
             }
             else
             {
-                // Create new
                 if (string.IsNullOrWhiteSpace(report.Id))
                     report.Id = Guid.NewGuid().ToString();
 
@@ -325,9 +321,6 @@ namespace CpPrinting.Api.Controllers
             }
         }
 
-        /// <summary>
-        /// Delete a saved delivery tracker report.
-        /// </summary>
         [HttpDelete("saved/{id}")]
         public async Task<IActionResult> DeleteSavedReport(string id)
         {
@@ -339,7 +332,6 @@ namespace CpPrinting.Api.Controllers
             return NoContent();
         }
 
-        // Helper: sort sizes in standard order
         private static int SizeOrder(string size)
         {
             return size.ToUpper() switch
