@@ -80,15 +80,10 @@ namespace CpPrinting.Api.Controllers
 
         // ==========================================
         // ELIGIBLE STYLES FOR STORE IN
-        // Now includes RemainingBulkQty (global balance)
         // ==========================================
         [HttpGet("eligible-store-in")]
         public async Task<ActionResult<IEnumerable<EligibleStoreInDto>>> GetEligibleStoreInStyles()
         {
-            // ── Source of truth: SampleStyles table ──────────────────────────────────
-            // Each SampleStyle row = one component (Front/Back/Sleeve etc.) for one style.
-            // It has its own submissionId and its own ApprovalRecord.
-            // This gives per-component remaining qty — no double-counting across components.
             var rawEligibleStyles = await (
                 from style in _context.SampleStyles
                 join approval in _context.Approvals
@@ -114,7 +109,6 @@ namespace CpPrinting.Api.Controllers
                 }
             ).ToListAsync();
 
-            // Per-submission IN qty already received
             var inQtyBySubmission = await _context.StoreInRecords
                 .GroupBy(r => r.SubmissionId)
                 .Select(g => new { SubmissionId = g.Key, TotalInQty = g.Sum(r => r.InQty) })
@@ -144,20 +138,19 @@ namespace CpPrinting.Api.Controllers
                     RemainingBulkQty = remaining
                 };
             })
-            .Where(x => x.RemainingBulkQty > 0)   // only show components with qty left to receive
+            .Where(x => x.RemainingBulkQty > 0)
             .ToList();
 
             return Ok(eligibleStyles);
         }
 
         // ==========================================
-        // BULK BALANCE — global per-style summary
+        // BULK BALANCE
         // ==========================================
         [Authorize(Roles = "Stores,Admin,Developer")]
         [HttpGet("bulk-balance")]
         public async Task<ActionResult<IEnumerable<BulkBalanceDto>>> GetBulkBalances()
         {
-            // Use SampleStyles — one row per component, own submissionId and approval
             var approvals = await (
                 from style in _context.SampleStyles
                 join approval in _context.Approvals
@@ -239,19 +232,17 @@ namespace CpPrinting.Api.Controllers
         }
 
         // ==========================================
-        // STORE IN — CREATE (single form, nested cuts + bundles)
+        // STORE IN — CREATE 
         // ==========================================
         [HttpPost("store-in")]
         public async Task<ActionResult<StoreInResponseDto>> CreateStoreInRecord(CreateStoreInRequest request)
         {
-            // --- Validate request ---
             if (string.IsNullOrWhiteSpace(request.SubmissionId))
                 return BadRequest("SubmissionId is required.");
 
             if (string.IsNullOrWhiteSpace(request.InAdNo))
                 return BadRequest("IN-AD No is required.");
 
-            // ScheduleNo is optional — only some styles use schedule tracking
             if (string.IsNullOrWhiteSpace(request.CutInDate))
                 return BadRequest("Cut In Date is required.");
 
@@ -261,7 +252,6 @@ namespace CpPrinting.Api.Controllers
             if (request.Cuts == null || request.Cuts.Count == 0)
                 return BadRequest("At least one cut is required.");
 
-            // --- Validate submission + approval ---
             var submission = await _context.Submissions
                 .FirstOrDefaultAsync(s => s.Id == request.SubmissionId);
 
@@ -279,18 +269,6 @@ namespace CpPrinting.Api.Controllers
 
             var approvedBulk = int.TryParse(approval.BulkOrderQty, out var bulkQty) ? bulkQty : 0;
 
-            // --- Check duplicate schedule number only when provided ---
-            if (!string.IsNullOrWhiteSpace(request.ScheduleNo))
-            {
-                var scheduleDuplicate = await _context.StoreInRecords
-                    .AnyAsync(r => r.SubmissionId == request.SubmissionId &&
-                                  !string.IsNullOrWhiteSpace(r.ScheduleNo) &&
-                                  r.ScheduleNo.ToLower() == request.ScheduleNo.Trim().ToLower());
-
-                if (scheduleDuplicate)
-                    return BadRequest($"Schedule No '{request.ScheduleNo}' already exists for this style. Each store-in entry must have a unique schedule number.");
-            }
-
             // --- Check global bulk balance ---
             var existingTotalIn = await GetTotalInQtyForSubmission(request.SubmissionId);
             var remainingBulk = Math.Max(0, approvedBulk - existingTotalIn);
@@ -306,11 +284,6 @@ namespace CpPrinting.Api.Controllers
             if (totalCutQty < request.InQty)
                 return BadRequest($"Total cut qty ({totalCutQty}) does not fully cover IN qty ({request.InQty}). " +
                                   $"You still have {request.InQty - totalCutQty} pcs unassigned — add more cuts or reduce the IN qty.");
-
-            // Check for duplicate cut numbers within the request
-            var cutNos = request.Cuts.Select(c => c.CutNo.Trim().ToLower()).ToList();
-            if (cutNos.Count != cutNos.Distinct().Count())
-                return BadRequest("Duplicate cut numbers found. Each cut must have a unique number.");
 
             foreach (var cut in request.Cuts)
             {
@@ -343,8 +316,6 @@ namespace CpPrinting.Api.Controllers
                 }
             }
 
-            // --- Get display fields from SampleStyle (has current approved BodyColour/PrintColour)
-            // Fall back to DevelopmentJob for Season which SampleStyle doesn't override
             var sampleStyle = await _context.SampleStyles
                 .FirstOrDefaultAsync(s => s.Id == request.SubmissionId);
             var job = await _context.DevelopmentJobs
@@ -352,7 +323,6 @@ namespace CpPrinting.Api.Controllers
                     j.StyleNo.ToLower() == submission.StyleNo.ToLower() &&
                     j.Customer.ToLower() == submission.CustomerName.ToLower());
 
-            // --- Build the entity tree ---
             var newBalanceBulk = Math.Max(0, approvedBulk - existingTotalIn - request.InQty);
 
             var record = new StoreInRecord
@@ -362,7 +332,6 @@ namespace CpPrinting.Api.Controllers
                 RevisionNo = submission.RevisionNo,
                 StyleNo = submission.StyleNo,
                 CustomerName = submission.CustomerName,
-                // Use SampleStyle for colours/component — reflects latest admin-approved values
                 BodyColour  = sampleStyle?.BodyColour  ?? job?.BodyColour,
                 PrintColour = sampleStyle?.PrintColour ?? job?.PrintColour,
                 Components  = sampleStyle?.Component   ?? job?.Component ?? string.Empty,
@@ -376,7 +345,7 @@ namespace CpPrinting.Api.Controllers
                 BalanceBulkQty = newBalanceBulk,
                 TotalCutQty = totalCutQty,
                 UncutBalance = Math.Max(0, request.InQty - totalCutQty),
-                AvailableQty = request.InQty, // Full IN qty is available until production issues
+                AvailableQty = request.InQty, 
                 Cuts = request.Cuts.Select(c => new CutRecord
                 {
                     Id = Guid.NewGuid().ToString(),
@@ -416,35 +385,30 @@ namespace CpPrinting.Api.Controllers
             if (existing == null)
                 return NotFound();
 
-            // Check if any production records already reference this — block structural changes if so
             var hasProductionRecords = await _context.StoreProductionRecords
                 .AnyAsync(p => p.StoreInRecordId == id);
 
             if (hasProductionRecords)
                 return BadRequest("Cannot edit: production records already issued from this store-in.");
 
-            // Block edit if CPI reports exist
             var hasCpi = await _context.CpiReports
                 .AnyAsync(c => c.StoreInRecordId == id);
 
             if (hasCpi)
                 return BadRequest("Cannot edit: QC inspection has already been performed on this record.");
 
-            // Block edit if advice notes exist
             var hasAdviceNotes = await _context.AdviceNotes
                 .AnyAsync(a => a.StoreInRecordId == id);
 
             if (hasAdviceNotes)
                 return BadRequest("Cannot edit: Gatepass advice notes reference this record.");
 
-            // Block edit if audit records exist
             var hasAudit = await _context.AuditRecords
                 .AnyAsync(a => a.StoreInRecordId == id);
 
             if (hasAudit)
                 return BadRequest("Cannot edit: Audit records reference this record.");
 
-            // --- Validate the same way as create ---
             if (string.IsNullOrWhiteSpace(request.CutInDate))
                 return BadRequest("Cut In Date is required.");
 
@@ -462,20 +426,6 @@ namespace CpPrinting.Api.Controllers
 
             var approvedBulk = (approval != null && int.TryParse(approval.BulkOrderQty, out var bq)) ? bq : 0;
 
-            // --- Check duplicate schedule number for same submission (exclude self) ---
-            if (!string.IsNullOrWhiteSpace(request.ScheduleNo))
-            {
-                var scheduleDuplicate = await _context.StoreInRecords
-                    .AnyAsync(r => r.SubmissionId == existing.SubmissionId &&
-                                  r.Id != id &&
-                                  !string.IsNullOrWhiteSpace(r.ScheduleNo) &&
-                                  r.ScheduleNo.ToLower() == request.ScheduleNo.Trim().ToLower());
-
-                if (scheduleDuplicate)
-                    return BadRequest($"Schedule No '{request.ScheduleNo}' already exists for this style. Each store-in entry must have a unique schedule number.");
-            }
-
-            // Exclude current record from the total to allow resizing
             var existingTotalIn = await GetTotalInQtyForSubmission(existing.SubmissionId, excludeStoreInId: id);
             var remainingBulk = Math.Max(0, approvedBulk - existingTotalIn);
 
@@ -488,11 +438,6 @@ namespace CpPrinting.Api.Controllers
             if (totalCutQty < request.InQty)
                 return BadRequest($"Total cut qty ({totalCutQty}) does not fully cover IN qty ({request.InQty}). " +
                                   $"You still have {request.InQty - totalCutQty} pcs unassigned — add more cuts or reduce the IN qty.");
-
-            // Check for duplicate cut numbers within the request
-            var cutNos = request.Cuts.Select(c => c.CutNo.Trim().ToLower()).ToList();
-            if (cutNos.Count != cutNos.Distinct().Count())
-                return BadRequest("Duplicate cut numbers found. Each cut must have a unique number.");
 
             // Validate each cut and bundle
             foreach (var cut in request.Cuts)
@@ -508,7 +453,6 @@ namespace CpPrinting.Api.Controllers
                 if (totalBundleQty > cut.CutQty)
                     return BadRequest($"Cut '{cut.CutNo}': total bundle qty ({totalBundleQty}) exceeds cut qty ({cut.CutQty}).");
 
-                // Check for duplicate bundle numbers within a cut
                 var bundleNos = cut.Bundles.Select(b => b.BundleNo.Trim().ToLower()).ToList();
                 if (bundleNos.Count != bundleNos.Distinct().Count())
                     return BadRequest($"Cut '{cut.CutNo}': duplicate bundle numbers found. Each bundle must have a unique number.");
@@ -524,11 +468,9 @@ namespace CpPrinting.Api.Controllers
                 }
             }
 
-            // --- Remove old children and replace ---
             _context.BundleRecords.RemoveRange(existing.Cuts.SelectMany(c => c.Bundles));
             _context.CutRecords.RemoveRange(existing.Cuts);
 
-            // --- Update parent fields ---
             existing.InAdNo = request.InAdNo.Trim();
             existing.ScheduleNo = request.ScheduleNo;
             existing.CutInDate = request.CutInDate;
@@ -536,9 +478,8 @@ namespace CpPrinting.Api.Controllers
             existing.BalanceBulkQty = Math.Max(0, approvedBulk - existingTotalIn - request.InQty);
             existing.TotalCutQty = totalCutQty;
             existing.UncutBalance = Math.Max(0, request.InQty - totalCutQty);
-            existing.AvailableQty = request.InQty; // Reset since no production records exist
+            existing.AvailableQty = request.InQty; 
 
-            // --- Recreate children ---
             existing.Cuts = request.Cuts.Select(c => new CutRecord
             {
                 Id = Guid.NewGuid().ToString(),
@@ -578,35 +519,31 @@ namespace CpPrinting.Api.Controllers
             if (record == null)
                 return NotFound();
 
-            // Block delete if production records exist
             var hasProduction = await _context.StoreProductionRecords
                 .AnyAsync(p => p.StoreInRecordId == id);
 
             if (hasProduction)
                 return BadRequest("Cannot delete a Store-In record with existing production issues.");
 
-            // Block delete if CPI reports exist
             var hasCpi = await _context.CpiReports
                 .AnyAsync(c => c.StoreInRecordId == id);
 
             if (hasCpi)
                 return BadRequest("Cannot delete: QC inspection reports exist for this record.");
 
-            // Block delete if advice notes exist
             var hasAdviceNotes = await _context.AdviceNotes
                 .AnyAsync(a => a.StoreInRecordId == id);
 
             if (hasAdviceNotes)
                 return BadRequest("Cannot delete: Gatepass advice notes exist for this record.");
 
-            // Block delete if audit records exist
             var hasAudit = await _context.AuditRecords
                 .AnyAsync(a => a.StoreInRecordId == id);
 
             if (hasAudit)
                 return BadRequest("Cannot delete: Audit records exist for this record.");
 
-            _context.StoreInRecords.Remove(record); // Cascade deletes cuts + bundles
+            _context.StoreInRecords.Remove(record); 
             await _context.SaveChangesAsync();
 
             await _logger.Log(User, HttpContext, "Delete", "StoreIn", id,
@@ -617,12 +554,10 @@ namespace CpPrinting.Api.Controllers
 
         // ==========================================
         // ELIGIBLE ITEMS FOR PRODUCTION
-        // (only QC-passed store-in records, with per-cut breakdown)
         // ==========================================
         [HttpGet("eligible-production")]
         public async Task<ActionResult<IEnumerable<EligibleProductionDto>>> GetEligibleProductionItems()
         {
-            // Get QC-passed store-in records with cuts
             var eligibleRecords = await (
                 from storeIn in _context.StoreInRecords
                     .Include(s => s.Cuts)
@@ -633,10 +568,8 @@ namespace CpPrinting.Api.Controllers
                 select new { StoreIn = storeIn, Cpi = cpi }
             ).ToListAsync();
 
-            // Get existing production records to calculate per-cut issued amounts
             var allProductionRecords = await _context.StoreProductionRecords.ToListAsync();
 
-            // Get bulk balances
             var approvals = await _context.Approvals.ToListAsync();
             var inQtyBySubmission = await _context.StoreInRecords
                 .GroupBy(r => r.SubmissionId)
@@ -648,12 +581,10 @@ namespace CpPrinting.Api.Controllers
                 var storeIn = x.StoreIn;
                 var cpi = x.Cpi;
 
-                // Bulk balance
                 var approval = approvals.FirstOrDefault(a => a.SubmissionId == storeIn.SubmissionId);
                 var approvedBulk = (approval != null && int.TryParse(approval.BulkOrderQty, out var bq)) ? bq : 0;
                 var totalIn = inQtyBySubmission.GetValueOrDefault(storeIn.SubmissionId, 0);
 
-                // Per-cut breakdown: how much of each cut has been issued
                 var productionForThisStoreIn = allProductionRecords
                     .Where(p => p.StoreInRecordId == storeIn.Id)
                     .ToList();
@@ -664,7 +595,6 @@ namespace CpPrinting.Api.Controllers
                         .Where(p => p.CutNo == c.CutNo)
                         .Sum(p => p.IssueQty);
 
-                    // Pull the Part locked in by the CPI inspection for this specific cut
                     var cpiCut = cpi.CutInspections?.FirstOrDefault(ci => ci.CutNo == c.CutNo);
                     var cutPart = cpiCut?.Part ?? string.Empty;
 
@@ -710,7 +640,6 @@ namespace CpPrinting.Api.Controllers
 
         // ==========================================
         // PRODUCTION ISSUES — BATCH CREATE
-        // Accepts multiple rows at once (one per cut issue)
         // ==========================================
         [HttpPost("production/batch")]
         public async Task<ActionResult<IEnumerable<StoreProductionRecord>>> BatchCreateProductionRecords(
@@ -732,7 +661,6 @@ namespace CpPrinting.Api.Controllers
                 if (storeIn == null)
                     return BadRequest($"Store-In record not found for ID: {record.StoreInRecordId}");
 
-                // Fetch CPI Report WITHOUT using .Include(r => r.CutInspections) since it is a JSON column
                 var cpiReport = await _context.CpiReports
                     .FirstOrDefaultAsync(r => r.StoreInRecordId == record.StoreInRecordId);
 
@@ -744,12 +672,10 @@ namespace CpPrinting.Api.Controllers
                     return BadRequest($"Cannot issue to production. CPI status is '{cpiReport.InspectionStatus}'.");
                 }
 
-                // Check how much has already been issued for this specific CutNo
                 var previouslyIssued = await _context.StoreProductionRecords
                     .Where(p => p.StoreInRecordId == record.StoreInRecordId && p.CutNo == record.CutNo)
                     .SumAsync(p => p.IssueQty);
 
-                // Fetch the original Cut record to check available qty
                 var cutRecord = await _context.CutRecords
                     .FirstOrDefaultAsync(c => c.StoreInRecordId == record.StoreInRecordId && c.CutNo == record.CutNo);
 
@@ -768,7 +694,6 @@ namespace CpPrinting.Api.Controllers
                 record.CustomerName = storeIn.CustomerName;
                 record.BalanceQty = record.IssueQty;
 
-                // Stamp component from CPI Part for this cut
                 if (string.IsNullOrWhiteSpace(record.Components))
                 {
                     var cpiCut = cpiReport.CutInspections?.FirstOrDefault(ci => ci.CutNo == record.CutNo);
@@ -819,7 +744,6 @@ namespace CpPrinting.Api.Controllers
             if (storeIn == null)
                 return BadRequest("Linked Store-In record not found.");
 
-            // QC gate check
             var cpi = await _context.CpiReports
                 .FirstOrDefaultAsync(r => r.StoreInRecordId == record.StoreInRecordId);
 
@@ -835,25 +759,21 @@ namespace CpPrinting.Api.Controllers
             if (string.IsNullOrWhiteSpace(record.Id))
                 record.Id = Guid.NewGuid().ToString();
 
-            // Backend source of truth
             record.SubmissionId = storeIn.SubmissionId;
             record.RevisionNo = storeIn.RevisionNo;
             record.StyleNo = storeIn.StyleNo;
             record.CustomerName = storeIn.CustomerName;
 
-            // Look up the Part from CPI for this specific cut — that becomes the Component
             var storeInCpi = await _context.CpiReports
                 .Include(r => r.CutInspections)
                 .FirstOrDefaultAsync(r => r.StoreInRecordId == record.StoreInRecordId);
             var cutNoToUse = !string.IsNullOrWhiteSpace(record.CutNo) ? record.CutNo : (storeIn.Cuts?.FirstOrDefault()?.CutNo ?? "N/A");
             var cpiCutForSingle = storeInCpi?.CutInspections?.FirstOrDefault(ci => ci.CutNo == cutNoToUse);
-            // Preserve component sent from frontend (from CPI Part); fallback to CPI lookup; last fallback storeIn.Components
             if (string.IsNullOrWhiteSpace(record.Components))
                 record.Components = cpiCutForSingle?.Part ?? storeIn.Components;
             record.CutNo = cutNoToUse;
             record.BalanceQty = Math.Max(0, storeIn.AvailableQty - record.IssueQty);
 
-            // Deduct from shelf
             storeIn.AvailableQty = record.BalanceQty;
 
             _context.StoreProductionRecords.Add(record);
@@ -887,7 +807,6 @@ namespace CpPrinting.Api.Controllers
             if (cpi == null || cpi.InspectionStatus != "Passed")
                 return BadRequest("Only QC-passed items can remain in Production.");
 
-            // Restore previous qty
             storeIn.AvailableQty += existing.IssueQty;
 
             if (record.IssueQty <= 0)
@@ -917,7 +836,6 @@ namespace CpPrinting.Api.Controllers
             if (record == null)
                 return NotFound();
 
-            // Block if advice notes reference this production record
             var hasAdviceNotes = await _context.AdviceNotes
                 .AnyAsync(a => a.ProductionRecordId.Contains(id) ||
                                a.StoreInRecordId == record.StoreInRecordId);
@@ -925,7 +843,6 @@ namespace CpPrinting.Api.Controllers
             if (hasAdviceNotes)
                 return BadRequest("Cannot delete: Gatepass advice notes have been dispatched from this production record.");
 
-            // Restore available qty
             var storeIn = await _context.StoreInRecords
                 .FirstOrDefaultAsync(r => r.Id == record.StoreInRecordId);
 
@@ -942,13 +859,8 @@ namespace CpPrinting.Api.Controllers
         }
 
         // ==========================================
-        // DEPENDENCY CHECKS — lightweight lookups for frontend lock indicators
+        // DEPENDENCY CHECKS 
         // ==========================================
-
-        /// <summary>
-        /// Returns which store-in records have downstream dependencies (CPI, production, gatepass, audit).
-        /// Frontend uses this to show lock icons on records that can't be edited/deleted.
-        /// </summary>
         [HttpGet("store-in/locks")]
         public async Task<ActionResult> GetStoreInLocks()
         {
@@ -974,15 +886,11 @@ namespace CpPrinting.Api.Controllers
             return Ok(locks);
         }
 
-        /// <summary>
-        /// Returns which production records have downstream dependencies (gatepass advice notes).
-        /// </summary>
         [HttpGet("production/locks")]
         public async Task<ActionResult> GetProductionLocks()
         {
             var prodIds = await _context.StoreProductionRecords.Select(p => p.Id).ToListAsync();
 
-            // Advice notes may have comma-separated production IDs
             var allAdviceNotes = await _context.AdviceNotes.Select(a => a.ProductionRecordId).ToListAsync();
             var gatepassProdIds = allAdviceNotes
                 .SelectMany(p => (p ?? "").Split(',').Select(x => x.Trim()))
