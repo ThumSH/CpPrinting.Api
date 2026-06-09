@@ -3,6 +3,12 @@ namespace CpPrinting.Api.DTOs
     public class GatepassBundleDto
     {
         public string BundleNo { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Manual row order saved from Store-In. Do not use BundleNo sorting.
+        /// </summary>
+        public int BundleOrder { get; set; }
+
         public int BundleQty { get; set; }
         public string Size { get; set; } = string.Empty;
         public string NumberRange { get; set; } = string.Empty;

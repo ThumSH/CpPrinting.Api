@@ -23,6 +23,22 @@ namespace CpPrinting.Api.Controllers
         }
 
         // ==========================================
+        // HELPER: Preserve Store-In bundle row order
+        // ==========================================
+        private static List<BundleRecord> OrderBundlesBySavedStoreInOrder(IEnumerable<BundleRecord>? bundles)
+        {
+            var list = (bundles ?? Enumerable.Empty<BundleRecord>()).ToList();
+
+            // New Store-In records have BundleOrder saved. Old records may have 0,
+            // so only order when BundleOrder is actually present. Never sort by
+            // BundleNo, because manual sequences like b-12, b-2, b-5, b-10
+            // must stay exactly as entered.
+            return list.Any(b => b.BundleOrder > 0)
+                ? list.OrderBy(b => b.BundleOrder > 0 ? b.BundleOrder : int.MaxValue).ToList()
+                : list;
+        }
+
+        // ==========================================
         // ELIGIBLE ITEMS FOR GATEPASS
         // Source: Production records (which come from QC-passed Store-In)
         // Enriched with Store-In data for full context
@@ -96,18 +112,21 @@ namespace CpPrinting.Api.Controllers
                             ?.FirstOrDefault(ci => ci.CutNo == c.CutNo);
                         var cutPart = cpiCut?.Part ?? string.Empty;
 
+                        var orderedBundles = OrderBundlesBySavedStoreInOrder(c.Bundles);
+
                         return new GatepassCutDto
                         {
                             CutNo  = c.CutNo,
                             CutQty = c.CutQty,
                             Part   = cutPart,
-                            Bundles = c.Bundles?.Select(b => new GatepassBundleDto
+                            Bundles = orderedBundles.Select((b, index) => new GatepassBundleDto
                             {
                                 BundleNo    = b.BundleNo,
+                                BundleOrder = b.BundleOrder > 0 ? b.BundleOrder : index + 1,
                                 BundleQty   = b.BundleQty,
                                 Size        = b.Size,
                                 NumberRange = b.NumberRange ?? string.Empty
-                            }).ToList() ?? new()
+                            }).ToList()
                         };
                     }).ToList()
                 };

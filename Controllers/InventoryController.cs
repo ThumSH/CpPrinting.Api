@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
+using System.Text.RegularExpressions;
 using CpPrinting.Api.Data;
 using CpPrinting.Api.Models;
 using CpPrinting.Api.DTOs;
@@ -36,6 +37,40 @@ namespace CpPrinting.Api.Controllers
             return await query.SumAsync(r => r.InQty);
         }
 
+        private static readonly Regex BundleNoPattern = new(@"^b\s*-?\s*(\d+)$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        // ==========================================
+        // HELPER: Normalize bundle numbers to b-NO without changing custom non-b values
+        // ==========================================
+        private static string NormalizeBundleNo(string? bundleNo)
+        {
+            var raw = (bundleNo ?? string.Empty).Trim();
+            var match = BundleNoPattern.Match(raw);
+
+            return match.Success
+                ? $"b-{int.Parse(match.Groups[1].Value)}"
+                : raw;
+        }
+
+        // ==========================================
+        // HELPER: Preserve the manual row order sent by the Store-In page
+        // ==========================================
+        private static void NormalizeBundleNumbersAndApplyOrder(CreateStoreInRequest request)
+        {
+            if (request.Cuts == null) return;
+
+            foreach (var cut in request.Cuts)
+            {
+                if (cut.Bundles == null) continue;
+
+                for (var i = 0; i < cut.Bundles.Count; i++)
+                {
+                    cut.Bundles[i].BundleNo = NormalizeBundleNo(cut.Bundles[i].BundleNo);
+                    cut.Bundles[i].BundleOrder = i + 1;
+                }
+            }
+        }
+
         // ==========================================
         // HELPER: Map StoreInRecord entity to response DTO
         // ==========================================
@@ -61,19 +96,32 @@ namespace CpPrinting.Api.Controllers
                 TotalCutQty = record.TotalCutQty,
                 UncutBalance = record.UncutBalance,
                 AvailableQty = record.AvailableQty,
-                Cuts = record.Cuts.Select(c => new CutResponseDto
+                Cuts = record.Cuts.Select(c =>
                 {
-                    Id = c.Id,
-                    CutNo = c.CutNo,
-                    CutQty = c.CutQty,
-                    Bundles = c.Bundles.Select(b => new BundleResponseDto
+                    var bundles = c.Bundles.ToList();
+
+                    // New records have BundleOrder saved. Old records do not, so keep their current EF order
+                    // instead of sorting by BundleNo and changing b-10/b-13/b-9 sequences.
+                    var orderedBundles = bundles.Any(b => b.BundleOrder > 0)
+                        ? bundles.OrderBy(b => b.BundleOrder > 0 ? b.BundleOrder : int.MaxValue).ToList()
+                        : bundles;
+
+                    return new CutResponseDto
                     {
-                        Id = b.Id,
-                        BundleNo = b.BundleNo,
-                        BundleQty = b.BundleQty,
-                        Size = b.Size,
-                        NumberRange = b.NumberRange ?? string.Empty
-                    }).ToList()
+                        Id = c.Id,
+                        CutNo = c.CutNo,
+                        CutQty = c.CutQty,
+                        SubmissionId = c.SubmissionId,
+                        Bundles = orderedBundles.Select((b, index) => new BundleResponseDto
+                        {
+                            Id = b.Id,
+                            BundleNo = NormalizeBundleNo(b.BundleNo),
+                            BundleOrder = b.BundleOrder > 0 ? b.BundleOrder : index + 1,
+                            BundleQty = b.BundleQty,
+                            Size = b.Size,
+                            NumberRange = b.NumberRange ?? string.Empty
+                        }).ToList()
+                    };
                 }).ToList()
             };
         }
@@ -252,6 +300,8 @@ namespace CpPrinting.Api.Controllers
             if (request.Cuts == null || request.Cuts.Count == 0)
                 return BadRequest("At least one cut is required.");
 
+            NormalizeBundleNumbersAndApplyOrder(request);
+
             var submission = await _context.Submissions
                 .FirstOrDefaultAsync(s => s.Id == request.SubmissionId);
 
@@ -301,7 +351,7 @@ namespace CpPrinting.Api.Controllers
                     return BadRequest($"Cut '{cut.CutNo}': total bundle qty ({totalBundleQty}) exceeds cut qty ({cut.CutQty}).");
 
                 // Check for duplicate bundle numbers within a cut
-                var bundleNos = cut.Bundles.Select(b => b.BundleNo.Trim().ToLower()).ToList();
+                var bundleNos = cut.Bundles.Select(b => NormalizeBundleNo(b.BundleNo).ToLower()).ToList();
                 if (bundleNos.Count != bundleNos.Distinct().Count())
                     return BadRequest($"Cut '{cut.CutNo}': duplicate bundle numbers found. Each bundle must have a unique number.");
 
@@ -351,10 +401,11 @@ namespace CpPrinting.Api.Controllers
                     Id = Guid.NewGuid().ToString(),
                     CutNo = c.CutNo,
                     CutQty = c.CutQty,
-                    Bundles = c.Bundles.Select(b => new BundleRecord
+                    Bundles = c.Bundles.Select((b, index) => new BundleRecord
                     {
                         Id = Guid.NewGuid().ToString(),
-                        BundleNo = b.BundleNo,
+                        BundleNo = NormalizeBundleNo(b.BundleNo),
+                        BundleOrder = index + 1,
                         BundleQty = b.BundleQty,
                         Size = b.Size,
                         NumberRange = b.NumberRange
@@ -421,6 +472,8 @@ namespace CpPrinting.Api.Controllers
             if (request.Cuts == null || request.Cuts.Count == 0)
                 return BadRequest("At least one cut is required.");
 
+            NormalizeBundleNumbersAndApplyOrder(request);
+
             var approval = await _context.Approvals
                 .FirstOrDefaultAsync(a => a.SubmissionId == existing.SubmissionId);
 
@@ -453,7 +506,7 @@ namespace CpPrinting.Api.Controllers
                 if (totalBundleQty > cut.CutQty)
                     return BadRequest($"Cut '{cut.CutNo}': total bundle qty ({totalBundleQty}) exceeds cut qty ({cut.CutQty}).");
 
-                var bundleNos = cut.Bundles.Select(b => b.BundleNo.Trim().ToLower()).ToList();
+                var bundleNos = cut.Bundles.Select(b => NormalizeBundleNo(b.BundleNo).ToLower()).ToList();
                 if (bundleNos.Count != bundleNos.Distinct().Count())
                     return BadRequest($"Cut '{cut.CutNo}': duplicate bundle numbers found. Each bundle must have a unique number.");
 
@@ -487,10 +540,11 @@ namespace CpPrinting.Api.Controllers
                 SubmissionId = existing.SubmissionId,
                 CutNo = c.CutNo,
                 CutQty = c.CutQty,
-                Bundles = c.Bundles.Select(b => new BundleRecord
+                Bundles = c.Bundles.Select((b, index) => new BundleRecord
                 {
                     Id = Guid.NewGuid().ToString(),
-                    BundleNo = b.BundleNo,
+                    BundleNo = NormalizeBundleNo(b.BundleNo),
+                    BundleOrder = index + 1,
                     BundleQty = b.BundleQty,
                     Size = b.Size,
                     NumberRange = b.NumberRange

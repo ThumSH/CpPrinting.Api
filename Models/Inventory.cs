@@ -116,6 +116,12 @@ namespace CpPrinting.Api.Models
         [Required]
         public string BundleNo { get; set; } = string.Empty;
 
+        /// <summary>
+        /// Preserves the exact manual row order entered by Stores.
+        /// Do not sort by BundleNo because b-10/b-13/b-9 must stay in entered order.
+        /// </summary>
+        public int BundleOrder { get; set; }
+
         public int BundleQty { get; set; }
 
         public string Size { get; set; } = string.Empty;

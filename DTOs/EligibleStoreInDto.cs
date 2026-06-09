@@ -67,6 +67,13 @@ namespace CpPrinting.Api.DTOs
     public class CreateBundleRequest
     {
         public string BundleNo { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Manual row order from the Store-In bundle table.
+        /// Backend also reassigns this from payload order for safety.
+        /// </summary>
+        public int BundleOrder { get; set; }
+
         public int BundleQty { get; set; }
         public string Size { get; set; } = string.Empty;
         public string? NumberRange { get; set; }
@@ -118,6 +125,7 @@ namespace CpPrinting.Api.DTOs
     {
         public string Id { get; set; } = string.Empty;
         public string BundleNo { get; set; } = string.Empty;
+        public int BundleOrder { get; set; }
         public int BundleQty { get; set; }
         public string Size { get; set; } = string.Empty;
         public string NumberRange { get; set; } = string.Empty;
