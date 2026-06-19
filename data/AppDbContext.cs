@@ -1,11 +1,3 @@
-// data/AppDbContext.cs
-// DEPLOYMENT NOTE:
-//   SampleStyle.OriginalImagePath is marked [NotMapped] — no DB column, no migration required.
-//   It is computed at response time by SampleStyleController.PopulateOriginalImagePath().
-//
-//   SampleStyleRevision.PreviousArtworkUrl is stored inside the Revisions JSON column —
-//   no schema change needed; EF Core serializes it automatically.
-
 using Microsoft.EntityFrameworkCore;
 using CpPrinting.Api.Models;
 using System.Text.Json;
@@ -38,6 +30,7 @@ namespace CpPrinting.Api.Data
         public DbSet<ColourMaster> ColourMasters { get; set; }
 
         public DbSet<SampleStyle> SampleStyles { get; set; }
+        public DbSet<ReconciliationReportRecord> ReconciliationReports { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
