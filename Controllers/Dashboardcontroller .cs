@@ -17,10 +17,31 @@ namespace CpPrinting.Api.Controllers
             _context = context;
         }
 
+        private static string GetDashboardToday()
+        {
+            try
+            {
+                var tz = TimeZoneInfo.FindSystemTimeZoneById("Asia/Colombo");
+                return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, tz).ToString("yyyy-MM-dd");
+            }
+            catch
+            {
+                try
+                {
+                    var tz = TimeZoneInfo.FindSystemTimeZoneById("Sri Lanka Standard Time");
+                    return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, tz).ToString("yyyy-MM-dd");
+                }
+                catch
+                {
+                    return DateTime.Now.ToString("yyyy-MM-dd");
+                }
+            }
+        }
+
         [HttpGet]
         public async Task<ActionResult> GetDashboardData()
         {
-            var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
+            var today = GetDashboardToday();
 
             // EF Core DbContext is NOT thread-safe — all queries must be sequential.
             // AsNoTracking() still gives a significant speed boost on read-only queries.

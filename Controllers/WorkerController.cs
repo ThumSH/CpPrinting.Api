@@ -22,6 +22,35 @@ namespace CpPrinting.Api.Controllers
             _logger = logger;
         }
 
+        // ── Stage allocation helper ───────────────────────────────────────────
+        // Each production stage has its own independent allocation limit.
+        // Example: IssueQty 21 means Seating can total 21, Printing can total 21,
+        // Curing can total 21, etc. The stages must NOT be summed together.
+        private static string? ValidateIndependentStageLimit(
+            int issueQty,
+            int previousSeating, int previousPrinting, int previousCuring,
+            int previousChecking, int previousPacking, int previousDispatch,
+            int currentSeating, int currentPrinting, int currentCuring,
+            int currentChecking, int currentPacking, int currentDispatch)
+        {
+            var checks = new[]
+            {
+                new { Stage = "Seating",  Total = previousSeating  + currentSeating  },
+                new { Stage = "Printing", Total = previousPrinting + currentPrinting },
+                new { Stage = "Curing",   Total = previousCuring   + currentCuring   },
+                new { Stage = "Checking", Total = previousChecking + currentChecking },
+                new { Stage = "Packing",  Total = previousPacking  + currentPacking  },
+                new { Stage = "Dispatch", Total = previousDispatch + currentDispatch },
+            };
+
+            var exceeded = checks.FirstOrDefault(x => x.Total > issueQty);
+            if (exceeded == null) return null;
+
+            return $"{exceeded.Stage} allocation ({exceeded.Total}) exceeds production issue qty ({issueQty}). " +
+                   $"Each stage has its own independent limit of {issueQty}.";
+        }
+
+
         [HttpGet("eligible-styles")]
         public async Task<ActionResult> GetEligibleStyles()
         {
@@ -57,20 +86,55 @@ namespace CpPrinting.Api.Controllers
                 })
                 .ToListAsync();
 
-            // FIXED: Calculate 'Completed' as the SUM of all pieces distributed across all process stages
-            var completedByProduction = dailyOutputs
+            // Each stage is allocated independently. Do NOT sum Seating + Printing +
+            // Curing etc. against IssueQty. IssueQty is the limit for EACH stage.
+            var stageTotalsByProduction = dailyOutputs
                 .GroupBy(d => d.ProductionRecordId)
                 .ToDictionary(
                     g => g.Key,
-                    g => g.Sum(x => x.TotalSeating + x.TotalPrinting + x.TotalCuring + x.TotalChecking + x.TotalPacking + x.TotalDispatch)
+                    g => new
+                    {
+                        Seating  = g.Sum(x => x.TotalSeating),
+                        Printing = g.Sum(x => x.TotalPrinting),
+                        Curing   = g.Sum(x => x.TotalCuring),
+                        Checking = g.Sum(x => x.TotalChecking),
+                        Packing  = g.Sum(x => x.TotalPacking),
+                        Dispatch = g.Sum(x => x.TotalDispatch)
+                    }
                 );
 
             var result = productionRecords.Select(p =>
             {
                 storeInMap.TryGetValue(p.StoreInRecordId, out var storeIn);
+                stageTotalsByProduction.TryGetValue(p.Id, out var stageTotals);
 
-                var completed = completedByProduction.GetValueOrDefault(p.Id, 0);
-                var remainingQty = Math.Max(0, p.IssueQty - completed);
+                var seatingAllocated  = stageTotals?.Seating  ?? 0;
+                var printingAllocated = stageTotals?.Printing ?? 0;
+                var curingAllocated   = stageTotals?.Curing   ?? 0;
+                var checkingAllocated = stageTotals?.Checking ?? 0;
+                var packingAllocated  = stageTotals?.Packing  ?? 0;
+                var dispatchAllocated = stageTotals?.Dispatch ?? 0;
+
+                var seatingRemaining  = Math.Max(0, p.IssueQty - seatingAllocated);
+                var printingRemaining = Math.Max(0, p.IssueQty - printingAllocated);
+                var curingRemaining   = Math.Max(0, p.IssueQty - curingAllocated);
+                var checkingRemaining = Math.Max(0, p.IssueQty - checkingAllocated);
+                var packingRemaining  = Math.Max(0, p.IssueQty - packingAllocated);
+                var dispatchRemaining = Math.Max(0, p.IssueQty - dispatchAllocated);
+
+                // Backward-compatible field used by old UI/dropdowns:
+                // keep the production row visible while at least one stage still has qty left.
+                var maxRemainingQty = new[]
+                {
+                    seatingRemaining, printingRemaining, curingRemaining,
+                    checkingRemaining, packingRemaining, dispatchRemaining
+                }.Max();
+
+                var maxAllocatedQty = new[]
+                {
+                    seatingAllocated, printingAllocated, curingAllocated,
+                    checkingAllocated, packingAllocated, dispatchAllocated
+                }.Max();
 
                 var resolvedComponent = p.Components;
                 if (string.IsNullOrWhiteSpace(resolvedComponent))
@@ -82,25 +146,39 @@ namespace CpPrinting.Api.Controllers
 
                 return new
                 {
-                    p.Id,                                          
-                    ProductionRecordId = p.Id,                     
+                    p.Id,
+                    ProductionRecordId = p.Id,
                     StoreInRecordId = p.StoreInRecordId,
                     p.SubmissionId,
                     StyleNo = p.StyleNo ?? string.Empty,
                     CustomerName = p.CustomerName ?? string.Empty,
                     ScheduleNo = storeIn?.ScheduleNo ?? string.Empty,
-                    Components = resolvedComponent,                
-                    Component = resolvedComponent,                 
+                    Components = resolvedComponent,
+                    Component = resolvedComponent,
                     BodyColour = storeIn?.BodyColour ?? string.Empty,
                     CutNo = p.CutNo ?? string.Empty,
                     LineNo = p.LineNo ?? string.Empty,
                     IssueDate = p.IssueDate ?? string.Empty,
-                    OriginalQty = p.IssueQty,                      
-                    DispatchedQty = completed,                 
-                    OrderQty = remainingQty,   
+                    OriginalQty = p.IssueQty,
+                    DispatchedQty = maxAllocatedQty,
+                    OrderQty = maxRemainingQty,
+
+                    SeatingAllocated = seatingAllocated,
+                    PrintingAllocated = printingAllocated,
+                    CuringAllocated = curingAllocated,
+                    CheckingAllocated = checkingAllocated,
+                    PackingAllocated = packingAllocated,
+                    DispatchAllocated = dispatchAllocated,
+
+                    SeatingRemaining = seatingRemaining,
+                    PrintingRemaining = printingRemaining,
+                    CuringRemaining = curingRemaining,
+                    CheckingRemaining = checkingRemaining,
+                    PackingRemaining = packingRemaining,
+                    DispatchRemaining = dispatchRemaining,
                 };
             })
-            .Where(x => x.OrderQty > 0)                            
+            .Where(x => x.OrderQty > 0)
             .ToList();
 
             return Ok(result);
@@ -200,17 +278,31 @@ namespace CpPrinting.Api.Controllers
             record.TotalPacking = record.TimeSlots?.Sum(t => t.Packing) ?? 0;
             record.TotalDispatch = record.TimeSlots?.Sum(t => t.Dispatch) ?? 0;
 
-            // FIXED: Validate stages cumulatively against IssueQty
+            // Validate each process stage independently against IssueQty.
+            // Seating, Printing, Curing, etc. each get their own full IssueQty limit.
             var existingOutputs = await _context.DailyOutputRecords
                 .Where(d => d.ProductionRecordId == record.ProductionRecordId)
                 .Select(d => new { d.TotalSeating, d.TotalPrinting, d.TotalCuring, d.TotalChecking, d.TotalPacking, d.TotalDispatch })
                 .ToListAsync();
 
-            var previousTotal = existingOutputs.Sum(x => x.TotalSeating + x.TotalPrinting + x.TotalCuring + x.TotalChecking + x.TotalPacking + x.TotalDispatch);
-            var currentTotal = record.TotalSeating + record.TotalPrinting + record.TotalCuring + record.TotalChecking + record.TotalPacking + record.TotalDispatch;
+            var validationError = ValidateIndependentStageLimit(
+                productionRecord.IssueQty,
+                existingOutputs.Sum(x => x.TotalSeating),
+                existingOutputs.Sum(x => x.TotalPrinting),
+                existingOutputs.Sum(x => x.TotalCuring),
+                existingOutputs.Sum(x => x.TotalChecking),
+                existingOutputs.Sum(x => x.TotalPacking),
+                existingOutputs.Sum(x => x.TotalDispatch),
+                record.TotalSeating,
+                record.TotalPrinting,
+                record.TotalCuring,
+                record.TotalChecking,
+                record.TotalPacking,
+                record.TotalDispatch
+            );
 
-            if (previousTotal + currentTotal > productionRecord.IssueQty)
-                return BadRequest($"Total pieces distributed across all stages ({previousTotal + currentTotal}) exceeds production issue qty ({productionRecord.IssueQty}).");
+            if (validationError != null)
+                return BadRequest(validationError);
 
             _context.DailyOutputRecords.Add(record);
             await _context.SaveChangesAsync();
@@ -257,30 +349,43 @@ namespace CpPrinting.Api.Controllers
                 record.TotalPacking = record.TimeSlots?.Sum(t => t.Packing) ?? 0;
                 record.TotalDispatch = record.TimeSlots?.Sum(t => t.Dispatch) ?? 0;
 
-                // FIXED: Validate cumulative stages for the batch record against DB AND the current batch
+                // Validate each process stage independently against DB records AND this batch.
                 var existingOutputs = await _context.DailyOutputRecords
                     .Where(d => d.ProductionRecordId == record.ProductionRecordId)
                     .Select(d => new { d.TotalSeating, d.TotalPrinting, d.TotalCuring, d.TotalChecking, d.TotalPacking, d.TotalDispatch })
                     .ToListAsync();
-                
+
                 var inBatchOutputs = records
                     .Where(d => d.ProductionRecordId == record.ProductionRecordId && d != record)
-                    .Select(d => new { 
-                        TotalSeating = d.TimeSlots?.Sum(t => t.Seating) ?? 0, 
-                        TotalPrinting = d.TimeSlots?.Sum(t => t.Printing) ?? 0, 
-                        TotalCuring = d.TimeSlots?.Sum(t => t.Curing) ?? 0, 
-                        TotalChecking = d.TimeSlots?.Sum(t => t.Checking) ?? 0, 
-                        TotalPacking = d.TimeSlots?.Sum(t => t.Packing) ?? 0, 
-                        TotalDispatch = d.TimeSlots?.Sum(t => t.Dispatch) ?? 0 
+                    .Select(d => new
+                    {
+                        TotalSeating = d.TimeSlots?.Sum(t => t.Seating) ?? 0,
+                        TotalPrinting = d.TimeSlots?.Sum(t => t.Printing) ?? 0,
+                        TotalCuring = d.TimeSlots?.Sum(t => t.Curing) ?? 0,
+                        TotalChecking = d.TimeSlots?.Sum(t => t.Checking) ?? 0,
+                        TotalPacking = d.TimeSlots?.Sum(t => t.Packing) ?? 0,
+                        TotalDispatch = d.TimeSlots?.Sum(t => t.Dispatch) ?? 0
                     })
                     .ToList();
 
-                var previousTotal = existingOutputs.Sum(x => x.TotalSeating + x.TotalPrinting + x.TotalCuring + x.TotalChecking + x.TotalPacking + x.TotalDispatch);
-                var batchOthersTotal = inBatchOutputs.Sum(x => x.TotalSeating + x.TotalPrinting + x.TotalCuring + x.TotalChecking + x.TotalPacking + x.TotalDispatch);
-                var currentTotal = record.TotalSeating + record.TotalPrinting + record.TotalCuring + record.TotalChecking + record.TotalPacking + record.TotalDispatch;
+                var validationError = ValidateIndependentStageLimit(
+                    productionRecord.IssueQty,
+                    existingOutputs.Sum(x => x.TotalSeating) + inBatchOutputs.Sum(x => x.TotalSeating),
+                    existingOutputs.Sum(x => x.TotalPrinting) + inBatchOutputs.Sum(x => x.TotalPrinting),
+                    existingOutputs.Sum(x => x.TotalCuring) + inBatchOutputs.Sum(x => x.TotalCuring),
+                    existingOutputs.Sum(x => x.TotalChecking) + inBatchOutputs.Sum(x => x.TotalChecking),
+                    existingOutputs.Sum(x => x.TotalPacking) + inBatchOutputs.Sum(x => x.TotalPacking),
+                    existingOutputs.Sum(x => x.TotalDispatch) + inBatchOutputs.Sum(x => x.TotalDispatch),
+                    record.TotalSeating,
+                    record.TotalPrinting,
+                    record.TotalCuring,
+                    record.TotalChecking,
+                    record.TotalPacking,
+                    record.TotalDispatch
+                );
 
-                if (previousTotal + batchOthersTotal + currentTotal > productionRecord.IssueQty)
-                    return BadRequest($"Total pieces distributed across all stages for {record.StyleNo} ({previousTotal + batchOthersTotal + currentTotal}) exceeds production issue qty ({productionRecord.IssueQty}).");
+                if (validationError != null)
+                    return BadRequest(validationError);
 
                 _context.DailyOutputRecords.Add(record);
                 saved.Add(record);
@@ -322,17 +427,30 @@ namespace CpPrinting.Api.Controllers
             existing.TotalPacking = existing.TimeSlots.Sum(t => t.Packing);
             existing.TotalDispatch = existing.TimeSlots.Sum(t => t.Dispatch);
 
-            // FIXED: Validate stages cumulatively against IssueQty
+            // Validate each process stage independently against IssueQty.
             var otherOutputs = await _context.DailyOutputRecords
                 .Where(d => d.ProductionRecordId == existing.ProductionRecordId && d.Id != existing.Id)
                 .Select(d => new { d.TotalSeating, d.TotalPrinting, d.TotalCuring, d.TotalChecking, d.TotalPacking, d.TotalDispatch })
                 .ToListAsync();
 
-            var otherTotal = otherOutputs.Sum(x => x.TotalSeating + x.TotalPrinting + x.TotalCuring + x.TotalChecking + x.TotalPacking + x.TotalDispatch);
-            var currentTotal = existing.TotalSeating + existing.TotalPrinting + existing.TotalCuring + existing.TotalChecking + existing.TotalPacking + existing.TotalDispatch;
+            var validationError = ValidateIndependentStageLimit(
+                productionRecord.IssueQty,
+                otherOutputs.Sum(x => x.TotalSeating),
+                otherOutputs.Sum(x => x.TotalPrinting),
+                otherOutputs.Sum(x => x.TotalCuring),
+                otherOutputs.Sum(x => x.TotalChecking),
+                otherOutputs.Sum(x => x.TotalPacking),
+                otherOutputs.Sum(x => x.TotalDispatch),
+                existing.TotalSeating,
+                existing.TotalPrinting,
+                existing.TotalCuring,
+                existing.TotalChecking,
+                existing.TotalPacking,
+                existing.TotalDispatch
+            );
 
-            if (otherTotal + currentTotal > productionRecord.IssueQty)
-                return BadRequest($"Total pieces distributed across all stages ({otherTotal + currentTotal}) exceeds production issue qty ({productionRecord.IssueQty}).");
+            if (validationError != null)
+                return BadRequest(validationError);
 
             await _context.SaveChangesAsync();
             await _logger.Log(User, HttpContext, "Update", "DailyOutput", existing.Id,

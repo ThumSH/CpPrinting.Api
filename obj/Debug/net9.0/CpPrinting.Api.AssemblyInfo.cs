@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("CpPrinting.Api")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+faa322be2566e4d292ac221390218fe31fb4a0f6")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7d75c075cae80e768db2b0f255e5f776583dbe5a")]
 [assembly: System.Reflection.AssemblyProductAttribute("CpPrinting.Api")]
 [assembly: System.Reflection.AssemblyTitleAttribute("CpPrinting.Api")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
