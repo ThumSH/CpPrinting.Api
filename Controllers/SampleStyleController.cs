@@ -226,6 +226,12 @@ namespace CpPrinting.Api.Controllers
             if (string.IsNullOrWhiteSpace(dto.RcMeetingDate)) return BadRequest("RC Meeting Date is required.");
             if (string.IsNullOrWhiteSpace(dto.BulkQty))       return BadRequest("Bulk Qty is required.");
 
+            var latestRev = style.Revisions?.OrderByDescending(r => r.RevisionNo).FirstOrDefault();
+            var revisionNo = latestRev?.RevisionNo ?? 1;
+            var comment = latestRev != null
+                ? $"Rev {latestRev.RevisionNo}: {latestRev.Comment}"
+                : dto.DeveloperComments?.Trim() ?? $"Sample style submitted — {style.StyleNo} ({style.Component})";
+
             style.RcMeetingDate     = dto.RcMeetingDate.Trim();
             style.BoardSet          = dto.BoardSet?.Trim();
             style.BulkQty           = dto.BulkQty.Trim();
@@ -233,21 +239,47 @@ namespace CpPrinting.Api.Controllers
             style.SubmittedToAdmin  = true;
             style.SubmittedAt       = Now;
             style.AdminStatus       = "Pending";
+            style.AdminRemarks      = null;
+            style.AdminActionAt     = null;
+            style.AdminActionBy     = null;
             style.UpdatedAt         = Now;
 
             var existing = await _context.Submissions.FirstOrDefaultAsync(s => s.Id == style.Id);
             if (existing == null)
             {
-                var latestRev = style.Revisions?.OrderByDescending(r => r.RevisionNo).FirstOrDefault();
-                var comment = latestRev != null
-                    ? $"Rev {latestRev.RevisionNo}: {latestRev.Comment}"
-                    : style.DeveloperComments ?? $"Sample style submitted — {style.StyleNo} ({style.Component})";
                 _context.Submissions.Add(new SubmissionForm
                 {
                     Id = style.Id, StyleNo = style.StyleNo, CustomerName = style.Customer,
                     SubmissionDate = Now, Level = "Sample", Comment = comment,
-                    RevisionNo = latestRev?.RevisionNo ?? 1, IsLatestRevision = true,
+                    RevisionNo = revisionNo, IsLatestRevision = true,
                 });
+            }
+            else
+            {
+                existing.StyleNo          = style.StyleNo;
+                existing.CustomerName     = style.Customer;
+                existing.SubmissionDate   = Now;
+                existing.Level            = "Sample";
+                existing.Comment          = comment;
+                existing.RevisionNo       = revisionNo;
+                existing.IsLatestRevision = true;
+            }
+
+            // If this was previously rejected, make the same approval row Pending again
+            // so the Admin page no longer shows the old rejection after resubmission.
+            var approval = await _context.Approvals.FirstOrDefaultAsync(a => a.SubmissionId == style.Id);
+            if (approval != null)
+            {
+                approval.Status        = "Pending";
+                approval.BoardSet      = null;
+                approval.ApprovalCard  = null;
+                approval.RaMeetingDate = null;
+                approval.BulkOrderQty  = null;
+                approval.ReviewedAt    = Now;
+                approval.RevisionNo    = revisionNo;
+                approval.StyleNo       = style.StyleNo;
+                approval.CustomerName  = style.Customer;
+                approval.Level         = "Sample";
             }
 
             await _context.SaveChangesAsync();
@@ -273,14 +305,26 @@ namespace CpPrinting.Api.Controllers
                 return BadRequest("LOCKED: Store-In records already exist for this style. " +
                                   "Approval cannot be changed once goods have been received.");
 
-            var allowed = new[] { "Approved", "Pending" };
-            if (!allowed.Contains(dto.Status)) return BadRequest("Status must be 'Approved' or 'Pending'.");
+            var allowed = new[] { "Approved", "Pending", "Rejected" };
+            if (!allowed.Contains(dto.Status)) return BadRequest("Status must be 'Approved', 'Pending', or 'Rejected'.");
 
             style.AdminStatus   = dto.Status;
             style.AdminRemarks  = dto.Remarks?.Trim();
             style.AdminActionAt = Now;
             style.AdminActionBy = CurrentUser;
             style.UpdatedAt     = Now;
+
+            if (dto.Status == "Rejected")
+            {
+                // Rejected styles return to the developer workflow. The client approval
+                // is kept, but the admin submission details must be filled again on resubmit.
+                style.SubmittedToAdmin  = false;
+                style.RcMeetingDate     = null;
+                style.AcNumber          = null;
+                style.BoardSet          = null;
+                style.BulkQty           = null;
+                style.DeveloperComments = null;
+            }
 
             var latestRevision = style.Revisions?.OrderByDescending(r => r.RevisionNo).FirstOrDefault();
             var submissionComment = latestRevision != null
@@ -323,13 +367,172 @@ namespace CpPrinting.Api.Controllers
                     approval.StyleNo = style.StyleNo; approval.CustomerName = style.Customer;
                 }
             }
-            else if (approval != null)
+            else
             {
-                approval.Status = "Pending"; approval.BoardSet = null;
-                approval.ApprovalCard = null; approval.RaMeetingDate = null;
-                approval.BulkOrderQty = null; approval.ReviewedAt = Now;
+                if (approval == null)
+                {
+                    approval = new ApprovalRecord
+                    {
+                        Id = Guid.NewGuid().ToString(), SubmissionId = style.Id,
+                        StyleNo = style.StyleNo, CustomerName = style.Customer,
+                        Level = "Sample", RevisionNo = latestRevision?.RevisionNo ?? 1,
+                    };
+                    _context.Approvals.Add(approval);
+                }
+
+                approval.Status        = dto.Status;
+                approval.BoardSet      = null;
+                approval.ApprovalCard  = null;
+                approval.RaMeetingDate = null;
+                approval.BulkOrderQty  = null;
+                approval.ReviewedAt    = Now;
+                approval.StyleNo       = style.StyleNo;
+                approval.CustomerName  = style.Customer;
+                approval.Level         = "Sample";
+                approval.RevisionNo    = latestRevision?.RevisionNo ?? 1;
             }
 
+            await _context.SaveChangesAsync();
+            PopulateOriginalImagePath(style);
+            return Ok(style);
+        }
+
+        // ==========================================
+        // EDIT REJECTED STYLE
+        // PATCH /api/samplestyle/{id}/rejectededit
+        // Only rejected styles can be edited here. This keeps approved/submitted
+        // and Store-In flows locked exactly as before.
+        //
+        // IMPORTANT: Artwork and old revision rows are NOT edited here.
+        // Any field change is recorded as a NEW revision entry so the
+        // developer and admin both see the latest correction count/history.
+        // ==========================================
+
+        [Authorize(Roles = "Admin,Developer")]
+        [HttpPatch("{id}/rejectededit")]
+        public async Task<ActionResult<SampleStyle>> UpdateRejectedStyle(
+            string id, [FromBody] UpdateRejectedStyleDto dto)
+        {
+            var style = await _context.SampleStyles.FindAsync(id);
+            if (style == null) return NotFound();
+
+            if (style.SubmittedToAdmin || style.AdminStatus != "Rejected")
+                return BadRequest("Only admin-rejected styles can be edited here.");
+
+            var hasStoreIn = await _context.StoreInRecords.AnyAsync(s => s.SubmissionId == style.Id);
+            if (hasStoreIn)
+                return BadRequest("LOCKED: Store-In records already exist for this style. Editing is not allowed.");
+
+            if (string.IsNullOrWhiteSpace(dto.Customer))          return BadRequest("Customer is required.");
+            if (string.IsNullOrWhiteSpace(dto.StyleNo))           return BadRequest("Style No is required.");
+            if (string.IsNullOrWhiteSpace(dto.Component))         return BadRequest("Component is required.");
+            if (string.IsNullOrWhiteSpace(dto.BodyColour))        return BadRequest("Body Colour is required.");
+            if (string.IsNullOrWhiteSpace(dto.PrintColour))       return BadRequest("Print Colour is required.");
+            if (string.IsNullOrWhiteSpace(dto.PrintingTechnique)) return BadRequest("Technique is required.");
+
+            static string Clean(string? value) => value?.Trim() ?? string.Empty;
+
+            var newCustomer          = Clean(dto.Customer);
+            var newStyleNo           = Clean(dto.StyleNo);
+            var newSeason            = Clean(dto.Season);
+            var newPrintingTechnique = Clean(dto.PrintingTechnique);
+            var newBodyColour        = Clean(dto.BodyColour);
+            var newPrintColour       = Clean(dto.PrintColour);
+            var newPrintColourQty    = Clean(dto.PrintColourQty);
+            var newWashingStandard   = Clean(dto.WashingStandard);
+            var newComponent         = Clean(dto.Component);
+
+            var changes = new List<string>();
+            void TrackChange(string label, string? oldValue, string newValue)
+            {
+                var oldClean = Clean(oldValue);
+                if (!string.Equals(oldClean, newValue, StringComparison.Ordinal))
+                    changes.Add($"{label}: '{oldClean}' → '{newValue}'");
+            }
+
+            TrackChange("Customer", style.Customer, newCustomer);
+            TrackChange("Style No", style.StyleNo, newStyleNo);
+            TrackChange("Component", style.Component, newComponent);
+            TrackChange("Season", style.Season, newSeason);
+            TrackChange("Body Colour", style.BodyColour, newBodyColour);
+            TrackChange("Print Colour", style.PrintColour, newPrintColour);
+            TrackChange("Print Qty", style.PrintColourQty, newPrintColourQty);
+            TrackChange("Technique", style.PrintingTechnique, newPrintingTechnique);
+            TrackChange("Washing", style.WashingStandard, newWashingStandard);
+
+            if (!changes.Any())
+                return BadRequest("No field changes found to save.");
+
+            style.Customer          = newCustomer;
+            style.StyleNo           = newStyleNo;
+            style.Season            = newSeason;
+            style.PrintingTechnique = newPrintingTechnique;
+            style.BodyColour        = newBodyColour;
+            style.PrintColour       = newPrintColour;
+            style.PrintColourQty    = newPrintColourQty;
+            style.WashingStandard   = newWashingStandard;
+            style.Component         = newComponent;
+
+            style.Revisions ??= new List<SampleStyleRevision>();
+            var nextRevisionNo = style.Revisions.Any()
+                ? style.Revisions.Max(r => r.RevisionNo) + 1
+                : 1;
+
+            var revisionComment = "Admin rejection correction — " + string.Join("; ", changes);
+            var revisionEntry = new SampleStyleRevision
+            {
+                Id                 = Guid.NewGuid().ToString(),
+                RevisionNo         = nextRevisionNo,
+                Comment            = revisionComment,
+                PreviousArtworkUrl = null,
+                ArtworkUrl         = null,
+                CreatedAt          = Now,
+                CreatedBy          = CurrentUser,
+            };
+
+            style.Revisions = new List<SampleStyleRevision>(style.Revisions) { revisionEntry };
+            style.ClientApproved = true;
+            style.UpdatedAt      = Now;
+
+            var linkedJob = await _context.DevelopmentJobs.FirstOrDefaultAsync(j => j.Id == style.DevelopmentJobId);
+            if (linkedJob != null)
+            {
+                linkedJob.Customer          = style.Customer;
+                linkedJob.StyleNo           = style.StyleNo;
+                linkedJob.Season            = style.Season;
+                linkedJob.PrintingTechnique = style.PrintingTechnique;
+                linkedJob.BodyColour        = style.BodyColour;
+                linkedJob.PrintColour       = style.PrintColour;
+                linkedJob.PrintColourQty    = style.PrintColourQty;
+                linkedJob.WashingStandard   = style.WashingStandard;
+                linkedJob.Component         = style.Component;
+                // Artwork is intentionally not changed from rejected edit.
+            }
+
+            // Keep the existing submission aligned so Admin sees the corrected
+            // style fields and the latest revision number after resubmission.
+            var submission = await _context.Submissions.FirstOrDefaultAsync(s => s.Id == style.Id);
+            if (submission != null)
+            {
+                submission.StyleNo          = style.StyleNo;
+                submission.CustomerName     = style.Customer;
+                submission.SubmissionDate   = Now;
+                submission.Level            = "Sample";
+                submission.Comment          = $"Rev {nextRevisionNo}: {revisionComment}";
+                submission.RevisionNo       = nextRevisionNo;
+                submission.IsLatestRevision = true;
+            }
+
+            var approval = await _context.Approvals.FirstOrDefaultAsync(a => a.SubmissionId == style.Id);
+            if (approval != null)
+            {
+                approval.StyleNo      = style.StyleNo;
+                approval.CustomerName = style.Customer;
+                approval.Level        = "Sample";
+                approval.RevisionNo   = nextRevisionNo;
+            }
+
+            _context.Entry(style).Property(e => e.Revisions).IsModified = true;
             await _context.SaveChangesAsync();
             PopulateOriginalImagePath(style);
             return Ok(style);
@@ -508,13 +711,27 @@ namespace CpPrinting.Api.Controllers
             return PhysicalFile(filePath, ct);
         }
 
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin,Developer")]
         [HttpDelete("{id}")]
         public async Task<IActionResult> Delete(string id)
         {
             var style = await _context.SampleStyles.FindAsync(id);
             if (style == null) return NotFound();
-            if (!string.IsNullOrEmpty(style.ImagePath))
+
+            var isAdmin = User.IsInRole("Admin");
+            if (!isAdmin && (style.SubmittedToAdmin || style.AdminStatus != "Rejected"))
+                return BadRequest("Only admin-rejected styles can be deleted by developers.");
+
+            var hasStoreIn = await _context.StoreInRecords.AnyAsync(s => s.SubmissionId == style.Id);
+            if (hasStoreIn)
+                return BadRequest("LOCKED: Store-In records already exist for this style. Delete is not allowed.");
+
+            var approvals = await _context.Approvals.Where(a => a.SubmissionId == style.Id).ToListAsync();
+            var submissions = await _context.Submissions.Where(s => s.Id == style.Id).ToListAsync();
+            _context.Approvals.RemoveRange(approvals);
+            _context.Submissions.RemoveRange(submissions);
+
+            if (!string.IsNullOrEmpty(style.ImagePath) && style.ImagePath.StartsWith("/uploads/"))
             {
                 var fp = Path.Combine(_env.WebRootPath ?? _env.ContentRootPath, style.ImagePath.TrimStart('/'));
                 if (System.IO.File.Exists(fp)) System.IO.File.Delete(fp);
@@ -556,6 +773,19 @@ namespace CpPrinting.Api.Controllers
         /// Leave null/empty to keep the existing colour unchanged.
         /// </summary>
         public string? NewBodyColour { get; set; }
+    }
+
+    public class UpdateRejectedStyleDto
+    {
+        public string Customer { get; set; } = string.Empty;
+        public string StyleNo { get; set; } = string.Empty;
+        public string Season { get; set; } = string.Empty;
+        public string PrintingTechnique { get; set; } = string.Empty;
+        public string BodyColour { get; set; } = string.Empty;
+        public string PrintColour { get; set; } = string.Empty;
+        public string PrintColourQty { get; set; } = string.Empty;
+        public string WashingStandard { get; set; } = string.Empty;
+        public string Component { get; set; } = string.Empty;
     }
 
     public class AdminActionDto
