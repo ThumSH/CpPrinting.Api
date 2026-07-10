@@ -35,6 +35,7 @@ namespace CpPrinting.Api.Models
         /// Optional schedule number. Some styles may not use schedules.
         /// </summary>
         public string ScheduleNo { get; set; } = string.Empty;
+        public string JobNo { get; set; } = string.Empty;
 
         public string? CutInDate { get; set; }
 

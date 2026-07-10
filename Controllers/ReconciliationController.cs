@@ -51,6 +51,7 @@ namespace CpPrinting.Api.Controllers
                     Season = record.Season ?? string.Empty,
                     InAdNo = record.InAdNo ?? string.Empty,
                     ScheduleNo = record.ScheduleNo ?? string.Empty,
+                    JobNo = record.JobNo ?? string.Empty,
                     CutInDate = record.CutInDate ?? string.Empty,
                     InQty = record.InQty,
                     TotalCutQty = record.TotalCutQty,
@@ -74,6 +75,7 @@ namespace CpPrinting.Api.Controllers
                     CustomerName = note.CustomerName,
                     StyleNo = note.StyleNo,
                     ScheduleNo = note.ScheduleNo,
+                    JobNo = note.JobNo ?? string.Empty,
                     CutNo = note.CutNo,
                     Component = note.Component,
                     DispatchQty = note.DispatchQty,
@@ -120,6 +122,7 @@ namespace CpPrinting.Api.Controllers
                 StyleNo = request.StyleNo.Trim(),
                 Component = request.Component.Trim(),
                 ScheduleNo = request.ScheduleNo?.Trim() ?? string.Empty,
+                JobNos = request.JobNos?.Trim() ?? string.Empty,
                 Colour = request.Colour?.Trim() ?? string.Empty,
                 ReportDate = reportDate,
                 ReceivedQty = request.Totals?.ReceivedQty ?? 0,
@@ -213,6 +216,7 @@ namespace CpPrinting.Api.Controllers
                 StyleNo = record.StyleNo,
                 Component = record.Component,
                 ScheduleNo = record.ScheduleNo,
+                JobNos = record.JobNos,
                 Colour = record.Colour,
                 ReportDate = record.ReportDate,
                 CreatedAt = record.CreatedAt,
@@ -251,6 +255,7 @@ namespace CpPrinting.Api.Controllers
         public string Season { get; set; } = string.Empty;
         public string InAdNo { get; set; } = string.Empty;
         public string ScheduleNo { get; set; } = string.Empty;
+        public string JobNo { get; set; } = string.Empty;
         public string CutInDate { get; set; } = string.Empty;
         public int InQty { get; set; }
         public int TotalCutQty { get; set; }
@@ -279,6 +284,7 @@ namespace CpPrinting.Api.Controllers
         public string CustomerName { get; set; } = string.Empty;
         public string StyleNo { get; set; } = string.Empty;
         public string ScheduleNo { get; set; } = string.Empty;
+        public string JobNo { get; set; } = string.Empty;
         public string CutNo { get; set; } = string.Empty;
         public string Component { get; set; } = string.Empty;
         public int DispatchQty { get; set; }
@@ -304,6 +310,7 @@ namespace CpPrinting.Api.Controllers
         public string StyleNo { get; set; } = string.Empty;
         public string Component { get; set; } = string.Empty;
         public string? ScheduleNo { get; set; }
+        public string? JobNos { get; set; }
         public string? Colour { get; set; }
         public string? ReportDate { get; set; }
         public ReconciliationReportTotalsDto? Totals { get; set; }
@@ -317,6 +324,7 @@ namespace CpPrinting.Api.Controllers
         public string StyleNo { get; set; } = string.Empty;
         public string Component { get; set; } = string.Empty;
         public string ScheduleNo { get; set; } = string.Empty;
+        public string JobNos { get; set; } = string.Empty;
         public string Colour { get; set; } = string.Empty;
         public string ReportDate { get; set; } = string.Empty;
         public string CreatedAt { get; set; } = string.Empty;

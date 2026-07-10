@@ -47,6 +47,8 @@ namespace CpPrinting.Api.DTOs
 
         // Enriched from Store-In record
         public string ScheduleNo { get; set; } = string.Empty;
+
+        public string JobNo { get; set; } = string.Empty;
         public string BodyColour { get; set; } = string.Empty;
         public string PrintColour { get; set; } = string.Empty;
         public string Season { get; set; } = string.Empty;

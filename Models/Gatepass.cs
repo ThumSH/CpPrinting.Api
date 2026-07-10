@@ -39,6 +39,8 @@ namespace CpPrinting.Api.Models
         public string StyleNo { get; set; } = string.Empty;
         public string Address { get; set; } = string.Empty;
         public string ScheduleNo { get; set; } = string.Empty;
+
+        public string JobNo { get; set; } = string.Empty;
         public string CutNo { get; set; } = string.Empty;
         public string Component { get; set; } = string.Empty;
 
