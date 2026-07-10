@@ -38,6 +38,7 @@ namespace CpPrinting.Api.Controllers
         }
 
         private static readonly Regex BundleNoPattern = new(@"^b\s*-?\s*(\d+)$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex JobNoPattern = new(@"^[0-9\s\/\-\.,]+$", RegexOptions.Compiled);
 
         // ==========================================
         // HELPER: Normalize bundle numbers to b-NO without changing custom non-b values
@@ -50,6 +51,26 @@ namespace CpPrinting.Api.Controllers
             return match.Success
                 ? $"b-{int.Parse(match.Groups[1].Value)}"
                 : raw;
+        }
+
+        // ==========================================
+        // HELPER: Job No is optional, but when entered it must contain
+        // numbers and symbols only. Letters are not allowed.
+        // Valid examples: 1, 2, 01, 1/2, 1-2, 1.2, 1,2
+        // ==========================================
+        private static string NormalizeJobNo(string? jobNo)
+        {
+            return (jobNo ?? string.Empty).Trim();
+        }
+
+        private static bool IsValidJobNo(string? jobNo)
+        {
+            var raw = NormalizeJobNo(jobNo);
+
+            if (string.IsNullOrWhiteSpace(raw))
+                return true;
+
+            return raw.Any(char.IsDigit) && JobNoPattern.IsMatch(raw);
         }
 
         // ==========================================
@@ -89,6 +110,7 @@ namespace CpPrinting.Api.Controllers
                 Season = record.Season ?? string.Empty,
                 InAdNo = record.InAdNo ?? string.Empty,
                 ScheduleNo = record.ScheduleNo,
+                JobNo = record.JobNo ?? string.Empty,
                 CutInDate = record.CutInDate ?? string.Empty,
                 BulkQty = record.BulkQty,
                 InQty = record.InQty,
@@ -300,6 +322,9 @@ namespace CpPrinting.Api.Controllers
             if (request.Cuts == null || request.Cuts.Count == 0)
                 return BadRequest("At least one cut is required.");
 
+            if (!IsValidJobNo(request.JobNo))
+                return BadRequest("Job No can contain numbers and symbols only. Letters are not allowed. Example: 1, 2, 1/2, 1-2.");
+
             NormalizeBundleNumbersAndApplyOrder(request);
 
             var submission = await _context.Submissions
@@ -389,6 +414,7 @@ namespace CpPrinting.Api.Controllers
 
                 InAdNo = request.InAdNo.Trim(),
                 ScheduleNo = request.ScheduleNo,
+                JobNo = NormalizeJobNo(request.JobNo),
                 CutInDate = request.CutInDate,
                 BulkQty = approvedBulk,
                 InQty = request.InQty,
@@ -472,6 +498,9 @@ namespace CpPrinting.Api.Controllers
             if (request.Cuts == null || request.Cuts.Count == 0)
                 return BadRequest("At least one cut is required.");
 
+            if (!IsValidJobNo(request.JobNo))
+                return BadRequest("Job No can contain numbers and symbols only. Letters are not allowed. Example: 1, 2, 1/2, 1-2.");
+
             NormalizeBundleNumbersAndApplyOrder(request);
 
             var approval = await _context.Approvals
@@ -526,6 +555,7 @@ namespace CpPrinting.Api.Controllers
 
             existing.InAdNo = request.InAdNo.Trim();
             existing.ScheduleNo = request.ScheduleNo;
+            existing.JobNo = NormalizeJobNo(request.JobNo);
             existing.CutInDate = request.CutInDate;
             existing.InQty = request.InQty;
             existing.BalanceBulkQty = Math.Max(0, approvedBulk - existingTotalIn - request.InQty);

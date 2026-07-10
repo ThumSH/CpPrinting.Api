@@ -41,8 +41,10 @@ namespace CpPrinting.Api.DTOs
     {
         public string SubmissionId { get; set; } = string.Empty;  // primary submission (first component)
         public string ScheduleNo { get; set; } = string.Empty;
+        public string JobNo { get; set; } = string.Empty;
 
         public string InAdNo { get; set; } = string.Empty;
+
         public string? CutInDate { get; set; }
         public int InQty { get; set; }
         public List<CreateCutRequest> Cuts { get; set; } = new();
@@ -94,6 +96,7 @@ namespace CpPrinting.Api.DTOs
         public string Components { get; set; } = string.Empty;
         public string Season { get; set; } = string.Empty;
         public string ScheduleNo { get; set; } = string.Empty;
+        public string JobNo { get; set; } = string.Empty;
         public string CutInDate { get; set; } = string.Empty;
         public int BulkQty { get; set; }
         public int InQty { get; set; }

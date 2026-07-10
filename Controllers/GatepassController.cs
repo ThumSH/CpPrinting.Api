@@ -102,6 +102,7 @@ namespace CpPrinting.Api.Controllers
                     IssueQty           = totalCutQty,
                     RemainingDispatchQty = remainingDispatchQty,
                     ScheduleNo         = storeIn.ScheduleNo   ?? string.Empty,
+                    JobNo              = storeIn.JobNo         ?? string.Empty,
                     BodyColour         = storeIn.BodyColour    ?? string.Empty,
                     PrintColour        = storeIn.PrintColour   ?? string.Empty,
                     Season             = storeIn.Season        ?? string.Empty,
@@ -209,6 +210,7 @@ namespace CpPrinting.Api.Controllers
             note.Component     = storeIn.Components    ?? string.Empty;
             note.BalanceQty    = Math.Max(0, remainingDispatchQty - note.DispatchQty);
             note.ScheduleNo    = storeIn.ScheduleNo    ?? string.Empty;
+            note.JobNo         = storeIn.JobNo         ?? string.Empty;
 
             _context.AdviceNotes.Add(note);
             await _context.SaveChangesAsync();
@@ -274,6 +276,7 @@ namespace CpPrinting.Api.Controllers
             existing.StyleNo = storeIn.StyleNo ?? string.Empty;
             existing.CustomerName = storeIn.CustomerName ?? string.Empty;
             existing.ScheduleNo = storeIn.ScheduleNo ?? string.Empty;
+            existing.JobNo = storeIn.JobNo ?? string.Empty;
             existing.Component = storeIn.Components ?? string.Empty;
             existing.CutNo = string.Join(", ", storeInWithCuts?.Cuts.Select(c => c.CutNo).Distinct() ?? Enumerable.Empty<string>());
 
