@@ -50,6 +50,15 @@ namespace CpPrinting.Api.Controllers
                    $"Each stage has its own independent limit of {issueQty}.";
         }
 
+        private async Task<bool> IsProductionRecordManuallyCompleted(string productionRecordId)
+        {
+            if (string.IsNullOrWhiteSpace(productionRecordId)) return false;
+
+            return await _context.DailyOutputRecords.AnyAsync(d =>
+                d.ProductionRecordId == productionRecordId &&
+                d.IsJobCompleted);
+        }
+
 
         [HttpGet("eligible-styles")]
         public async Task<ActionResult> GetEligibleStyles()
@@ -57,6 +66,22 @@ namespace CpPrinting.Api.Controllers
             var productionRecords = await _context.StoreProductionRecords
                 .OrderByDescending(p => p.IssueDate)
                 .ToListAsync();
+
+            if (!productionRecords.Any())
+                return Ok(Array.Empty<object>());
+
+            var completedProductionIds = await _context.DailyOutputRecords
+                .Where(d => d.IsJobCompleted && !string.IsNullOrWhiteSpace(d.ProductionRecordId))
+                .Select(d => d.ProductionRecordId)
+                .Distinct()
+                .ToListAsync();
+
+            if (completedProductionIds.Any())
+            {
+                productionRecords = productionRecords
+                    .Where(p => !completedProductionIds.Contains(p.Id))
+                    .ToList();
+            }
 
             if (!productionRecords.Any())
                 return Ok(Array.Empty<object>());
@@ -73,7 +98,7 @@ namespace CpPrinting.Api.Controllers
             var cpiByStoreIn = cpiReports.ToDictionary(r => r.StoreInRecordId);
 
             var dailyOutputs = await _context.DailyOutputRecords
-                .Where(d => !string.IsNullOrWhiteSpace(d.ProductionRecordId))
+                .Where(d => !d.IsJobCompleted && !string.IsNullOrWhiteSpace(d.ProductionRecordId))
                 .Select(d => new
                 {
                     d.ProductionRecordId,
@@ -199,7 +224,9 @@ namespace CpPrinting.Api.Controllers
             [FromQuery] string? dateFrom = null,
             [FromQuery] string? dateTo = null)
         {
-            var query = _context.DailyOutputRecords.AsQueryable();
+            var query = _context.DailyOutputRecords
+                .Where(r => !r.IsJobCompleted)
+                .AsQueryable();
 
             if (!string.IsNullOrWhiteSpace(search))
             {
@@ -280,8 +307,11 @@ namespace CpPrinting.Api.Controllers
 
             // Validate each process stage independently against IssueQty.
             // Seating, Printing, Curing, etc. each get their own full IssueQty limit.
+            if (await IsProductionRecordManuallyCompleted(record.ProductionRecordId))
+                return BadRequest("This job has already been manually completed.");
+
             var existingOutputs = await _context.DailyOutputRecords
-                .Where(d => d.ProductionRecordId == record.ProductionRecordId)
+                .Where(d => !d.IsJobCompleted && d.ProductionRecordId == record.ProductionRecordId)
                 .Select(d => new { d.TotalSeating, d.TotalPrinting, d.TotalCuring, d.TotalChecking, d.TotalPacking, d.TotalDispatch })
                 .ToListAsync();
 
@@ -349,9 +379,12 @@ namespace CpPrinting.Api.Controllers
                 record.TotalPacking = record.TimeSlots?.Sum(t => t.Packing) ?? 0;
                 record.TotalDispatch = record.TimeSlots?.Sum(t => t.Dispatch) ?? 0;
 
+                if (await IsProductionRecordManuallyCompleted(record.ProductionRecordId))
+                    return BadRequest($"Production record '{record.ProductionRecordId}' has already been manually completed.");
+
                 // Validate each process stage independently against DB records AND this batch.
                 var existingOutputs = await _context.DailyOutputRecords
-                    .Where(d => d.ProductionRecordId == record.ProductionRecordId)
+                    .Where(d => !d.IsJobCompleted && d.ProductionRecordId == record.ProductionRecordId)
                     .Select(d => new { d.TotalSeating, d.TotalPrinting, d.TotalCuring, d.TotalChecking, d.TotalPacking, d.TotalDispatch })
                     .ToListAsync();
 
@@ -404,7 +437,10 @@ namespace CpPrinting.Api.Controllers
             if (string.IsNullOrWhiteSpace(id)) return BadRequest("Record ID is required.");
 
             var existing = await _context.DailyOutputRecords.FirstOrDefaultAsync(r => r.Id == id);
-            if (existing == null) return NotFound("Daily output record not found.");
+            if (existing == null || existing.IsJobCompleted) return NotFound("Daily output record not found.");
+
+            if (await IsProductionRecordManuallyCompleted(existing.ProductionRecordId))
+                return BadRequest("This job has already been manually completed.");
 
             var storeIn = await _context.StoreInRecords.FirstOrDefaultAsync(s => s.Id == record.StoreInRecordId);
             if (storeIn == null) return BadRequest("Linked Store-In record not found.");
@@ -429,7 +465,7 @@ namespace CpPrinting.Api.Controllers
 
             // Validate each process stage independently against IssueQty.
             var otherOutputs = await _context.DailyOutputRecords
-                .Where(d => d.ProductionRecordId == existing.ProductionRecordId && d.Id != existing.Id)
+                .Where(d => !d.IsJobCompleted && d.ProductionRecordId == existing.ProductionRecordId && d.Id != existing.Id)
                 .Select(d => new { d.TotalSeating, d.TotalPrinting, d.TotalCuring, d.TotalChecking, d.TotalPacking, d.TotalDispatch })
                 .ToListAsync();
 
@@ -463,7 +499,7 @@ namespace CpPrinting.Api.Controllers
         public async Task<IActionResult> DeleteDailyOutput(string id)
         {
             var record = await _context.DailyOutputRecords.FindAsync(id);
-            if (record == null) return NotFound();
+            if (record == null || record.IsJobCompleted) return NotFound();
 
             _context.DailyOutputRecords.Remove(record);
             await _context.SaveChangesAsync();
@@ -472,6 +508,74 @@ namespace CpPrinting.Api.Controllers
                 $"Deleted daily output for {record.StyleNo}, Table: {record.TableNo}");
 
             return NoContent();
+        }
+
+        [HttpPost("complete-job/{productionRecordId}")]
+        public async Task<IActionResult> CompleteJob(string productionRecordId)
+        {
+            if (string.IsNullOrWhiteSpace(productionRecordId))
+                return BadRequest("ProductionRecordId is required.");
+
+            var productionRecord = await _context.StoreProductionRecords
+                .FirstOrDefaultAsync(p => p.Id == productionRecordId);
+
+            if (productionRecord == null)
+                return NotFound("Production record not found.");
+
+            if (await IsProductionRecordManuallyCompleted(productionRecordId))
+            {
+                return Ok(new
+                {
+                    ProductionRecordId = productionRecordId,
+                    Completed = true,
+                    Message = "Job is already completed."
+                });
+            }
+
+            var storeIn = await _context.StoreInRecords
+                .FirstOrDefaultAsync(s => s.Id == productionRecord.StoreInRecordId);
+
+            var completedAt = DateTime.UtcNow;
+            var completedBy = User?.Identity?.Name ?? string.Empty;
+
+            var marker = new DailyOutputRecord
+            {
+                Id = Guid.NewGuid().ToString(),
+                StoreInRecordId = productionRecord.StoreInRecordId ?? string.Empty,
+                ProductionRecordId = productionRecord.Id,
+                SubmissionId = productionRecord.SubmissionId ?? storeIn?.SubmissionId ?? string.Empty,
+                Date = completedAt.ToString("yyyy-MM-dd"),
+                StyleNo = productionRecord.StyleNo ?? storeIn?.StyleNo ?? string.Empty,
+                CustomerName = productionRecord.CustomerName ?? storeIn?.CustomerName ?? string.Empty,
+                CutNo = productionRecord.CutNo ?? string.Empty,
+                Component = productionRecord.Components ?? string.Empty,
+                OrderQty = productionRecord.IssueQty,
+                TableNo = "COMPLETED",
+                WorkerName = completedBy,
+                IsJobCompleted = true,
+                CompletedAt = completedAt.ToString("O"),
+                CompletedBy = completedBy,
+                TimeSlots = new List<TimeSlotEntry>(),
+                TotalSeating = 0,
+                TotalPrinting = 0,
+                TotalCuring = 0,
+                TotalChecking = 0,
+                TotalPacking = 0,
+                TotalDispatch = 0
+            };
+
+            _context.DailyOutputRecords.Add(marker);
+            await _context.SaveChangesAsync();
+
+            await _logger.Log(User!, HttpContext, "Complete", "WorkerJob", productionRecord.Id,
+                $"Manually completed worker job for {marker.StyleNo} (Cut: {marker.CutNo}, Component: {marker.Component})");
+
+            return Ok(new
+            {
+                ProductionRecordId = productionRecord.Id,
+                Completed = true,
+                Message = "Job completed successfully."
+            });
         }
 
         // ==========================================
