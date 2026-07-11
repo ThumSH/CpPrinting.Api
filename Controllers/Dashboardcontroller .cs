@@ -10,6 +10,8 @@ namespace CpPrinting.Api.Controllers
     [ApiController]
     public class DashboardController : ControllerBase
     {
+        private const string DashboardStringCollation = "SQL_Latin1_General_CP1_CI_AS";
+
         private readonly AppDbContext _context;
 
         public DashboardController(AppDbContext context)
@@ -225,7 +227,7 @@ namespace CpPrinting.Api.Controllers
 
             // Store-in summary per submission
             var storeInSummary = await _context.StoreInRecords.AsNoTracking()
-                .Where(s => submissionIds.Contains(s.SubmissionId))
+                .Where(s => submissionIds.Contains(EF.Functions.Collate(s.SubmissionId, DashboardStringCollation)))
                 .GroupBy(s => s.SubmissionId)
                 .Select(g => new
                 {
@@ -238,7 +240,7 @@ namespace CpPrinting.Api.Controllers
 
             // StoreIn IDs needed for downstream joins
             var storeInRows = await _context.StoreInRecords.AsNoTracking()
-                .Where(s => submissionIds.Contains(s.SubmissionId))
+                .Where(s => submissionIds.Contains(EF.Functions.Collate(s.SubmissionId, DashboardStringCollation)))
                 .Select(s => new { s.SubmissionId, s.Id })
                 .ToListAsync();
 
@@ -268,13 +270,13 @@ namespace CpPrinting.Api.Controllers
 
             // Sequential DB aggregations — one await at a time
             var productionData = await _context.StoreProductionRecords.AsNoTracking()
-                .Where(p => allStoreInIds.Contains(p.StoreInRecordId))
+                .Where(p => allStoreInIds.Contains(EF.Functions.Collate(p.StoreInRecordId, DashboardStringCollation)))
                 .GroupBy(p => p.StoreInRecordId)
                 .Select(g => new { StoreInRecordId = g.Key, TotalIssued = g.Sum(p => p.IssueQty), Count = g.Count() })
                 .ToListAsync();
 
             var cpiData = await _context.CpiReports.AsNoTracking()
-                .Where(c => allStoreInIds.Contains(c.StoreInRecordId))
+                .Where(c => allStoreInIds.Contains(EF.Functions.Collate(c.StoreInRecordId, DashboardStringCollation)))
                 .GroupBy(c => c.StoreInRecordId)
                 .Select(g => new
                 {
@@ -287,13 +289,13 @@ namespace CpPrinting.Api.Controllers
                 .ToListAsync();
 
             var dispatchData = await _context.AdviceNotes.AsNoTracking()
-                .Where(a => allStoreInIds.Contains(a.StoreInRecordId))
+                .Where(a => allStoreInIds.Contains(EF.Functions.Collate(a.StoreInRecordId, DashboardStringCollation)))
                 .GroupBy(a => a.StoreInRecordId)
                 .Select(g => new { StoreInRecordId = g.Key, TotalDispatched = g.Sum(a => a.DispatchQty), Count = g.Count() })
                 .ToListAsync();
 
             var auditData = await _context.AuditRecords.AsNoTracking()
-                .Where(a => allStoreInIds.Contains(a.StoreInRecordId))
+                .Where(a => allStoreInIds.Contains(EF.Functions.Collate(a.StoreInRecordId, DashboardStringCollation)))
                 .GroupBy(a => a.StoreInRecordId)
                 .Select(g => new
                 {
@@ -305,7 +307,7 @@ namespace CpPrinting.Api.Controllers
                 .ToListAsync();
 
             var workerData = await _context.DailyOutputRecords.AsNoTracking()
-                .Where(d => allStoreInIds.Contains(d.StoreInRecordId))
+                .Where(d => allStoreInIds.Contains(EF.Functions.Collate(d.StoreInRecordId, DashboardStringCollation)))
                 .GroupBy(d => d.StoreInRecordId)
                 .Select(g => new
                 {
@@ -317,7 +319,7 @@ namespace CpPrinting.Api.Controllers
                 .ToListAsync();
 
             var cutData = await _context.CutRecords.AsNoTracking()
-                .Where(c => allStoreInIds.Contains(c.StoreInRecordId))
+                .Where(c => allStoreInIds.Contains(EF.Functions.Collate(c.StoreInRecordId, DashboardStringCollation)))
                 .GroupBy(c => c.StoreInRecordId)
                 .Select(g => new { StoreInRecordId = g.Key, Count = g.Count() })
                 .ToListAsync();
