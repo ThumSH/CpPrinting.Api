@@ -16,8 +16,9 @@ namespace CpPrinting.Api.Models
         public string StyleNo { get; set; } = string.Empty;
         public string Component { get; set; } = string.Empty;
         public string ScheduleNo { get; set; } = string.Empty;
-
         public string JobNos { get; set; } = string.Empty;
+        public string InvoiceNo { get; set; } = string.Empty;
+        public string PoNo { get; set; } = string.Empty;
         public string Colour { get; set; } = string.Empty;
 
         /// <summary>

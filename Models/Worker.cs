@@ -29,6 +29,15 @@ namespace CpPrinting.Api.Models
         /// </summary>
         public string ProductionRecordId { get; set; } = string.Empty;
 
+        /// <summary>
+        /// Manual completion marker used when a worker/admin closes a production job
+        /// even if one or more stages still have remaining quantities.
+        /// Completion marker rows are excluded from normal daily output listings.
+        /// </summary>
+        public bool IsJobCompleted { get; set; } = false;
+        public string CompletedAt { get; set; } = string.Empty;
+        public string CompletedBy { get; set; } = string.Empty;
+
         public string SubmissionId { get; set; } = string.Empty;
 
         // Metadata

@@ -123,6 +123,8 @@ namespace CpPrinting.Api.Controllers
                 Component = request.Component.Trim(),
                 ScheduleNo = request.ScheduleNo?.Trim() ?? string.Empty,
                 JobNos = request.JobNos?.Trim() ?? string.Empty,
+                InvoiceNo = request.InvoiceNo?.Trim() ?? string.Empty,
+                PoNo = request.PoNo?.Trim() ?? string.Empty,
                 Colour = request.Colour?.Trim() ?? string.Empty,
                 ReportDate = reportDate,
                 ReceivedQty = request.Totals?.ReceivedQty ?? 0,
@@ -217,6 +219,8 @@ namespace CpPrinting.Api.Controllers
                 Component = record.Component,
                 ScheduleNo = record.ScheduleNo,
                 JobNos = record.JobNos,
+                InvoiceNo = record.InvoiceNo,
+                PoNo = record.PoNo,
                 Colour = record.Colour,
                 ReportDate = record.ReportDate,
                 CreatedAt = record.CreatedAt,
@@ -311,6 +315,8 @@ namespace CpPrinting.Api.Controllers
         public string Component { get; set; } = string.Empty;
         public string? ScheduleNo { get; set; }
         public string? JobNos { get; set; }
+        public string? InvoiceNo { get; set; }
+        public string? PoNo { get; set; }
         public string? Colour { get; set; }
         public string? ReportDate { get; set; }
         public ReconciliationReportTotalsDto? Totals { get; set; }
@@ -325,6 +331,8 @@ namespace CpPrinting.Api.Controllers
         public string Component { get; set; } = string.Empty;
         public string ScheduleNo { get; set; } = string.Empty;
         public string JobNos { get; set; } = string.Empty;
+        public string InvoiceNo { get; set; } = string.Empty;
+        public string PoNo { get; set; } = string.Empty;
         public string Colour { get; set; } = string.Empty;
         public string ReportDate { get; set; } = string.Empty;
         public string CreatedAt { get; set; } = string.Empty;
@@ -347,12 +355,14 @@ namespace CpPrinting.Api.Controllers
     public class ReconciliationSavedRowDto
     {
         public string ReceivedDate { get; set; } = string.Empty;
+        public string ReceivedJobNo { get; set; } = string.Empty;
         public string ReceivedAdNo { get; set; } = string.Empty;
         public string ReceivedCutNo { get; set; } = string.Empty;
         public int? ReceivedQty { get; set; }
         public int? ReceivedRunningTotal { get; set; }
 
         public string SentDate { get; set; } = string.Empty;
+        public string SentJobNo { get; set; } = string.Empty;
         public string SentAdNo { get; set; } = string.Empty;
         public string SentCutNo { get; set; } = string.Empty;
         public int? SentTotal { get; set; }
