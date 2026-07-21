@@ -9,6 +9,7 @@ obj/
 ## Sensitive config — NEVER push these
 appsettings.json
 appsettings.Development.json
+wwwroot/uploads/
 
 ## Certificates
 *.pfx

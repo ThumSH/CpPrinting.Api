@@ -3,6 +3,7 @@ using CpPrinting.Api.Data;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
+using CpPrinting.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -60,5 +61,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+
+await SuperAdminSeeder.SeedAsync(app.Services);
 
 app.Run("http://0.0.0.0:5000");
