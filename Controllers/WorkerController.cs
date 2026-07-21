@@ -61,17 +61,38 @@ namespace CpPrinting.Api.Controllers
 
 
         [HttpGet("eligible-styles")]
-        public async Task<ActionResult> GetEligibleStyles()
+        public async Task<ActionResult> GetEligibleStyles(
+            [FromQuery] string? productionRecordId = null)
         {
-            var productionRecords = await _context.StoreProductionRecords
+            var productionQuery = _context.StoreProductionRecords
+                .AsNoTracking()
+                .AsQueryable();
+
+            // Continue supplies the exact StoreProductionRecord primary key.
+            // Normal dropdown loading omits it and keeps the existing behaviour.
+            if (!string.IsNullOrWhiteSpace(productionRecordId))
+            {
+                var exactId = productionRecordId.Trim();
+                productionQuery = productionQuery.Where(p => p.Id == exactId);
+            }
+
+            var productionRecords = await productionQuery
                 .OrderByDescending(p => p.IssueDate)
                 .ToListAsync();
 
             if (!productionRecords.Any())
                 return Ok(Array.Empty<object>());
 
+            var requestedProductionIds = productionRecords
+                .Select(p => p.Id)
+                .ToList();
+
             var completedProductionIds = await _context.DailyOutputRecords
-                .Where(d => d.IsJobCompleted && !string.IsNullOrWhiteSpace(d.ProductionRecordId))
+                .AsNoTracking()
+                .Where(d =>
+                    d.IsJobCompleted &&
+                    !string.IsNullOrWhiteSpace(d.ProductionRecordId) &&
+                    requestedProductionIds.Contains(d.ProductionRecordId))
                 .Select(d => d.ProductionRecordId)
                 .Distinct()
                 .ToListAsync();
@@ -88,17 +109,33 @@ namespace CpPrinting.Api.Controllers
 
             var storeInIds = productionRecords.Select(p => p.StoreInRecordId).Distinct().ToList();
             var storeInRecords = await _context.StoreInRecords
+                .AsNoTracking()
                 .Where(s => storeInIds.Contains(s.Id))
                 .ToListAsync();
             var storeInMap = storeInRecords.ToDictionary(s => s.Id);
 
             var cpiReports = await _context.CpiReports
+                .AsNoTracking()
                 .Where(r => storeInIds.Contains(r.StoreInRecordId))
                 .ToListAsync();
-            var cpiByStoreIn = cpiReports.ToDictionary(r => r.StoreInRecordId);
+
+            // A Store-In can have more than one CPI report in real data. A
+            // lookup prevents duplicate-key exceptions that would make
+            // /eligible-styles fail and break Continue.
+            var cpiByStoreIn = cpiReports
+                .Where(r => !string.IsNullOrWhiteSpace(r.StoreInRecordId))
+                .ToLookup(r => r.StoreInRecordId);
+
+            var remainingProductionIds = productionRecords
+                .Select(p => p.Id)
+                .ToList();
 
             var dailyOutputs = await _context.DailyOutputRecords
-                .Where(d => !d.IsJobCompleted && !string.IsNullOrWhiteSpace(d.ProductionRecordId))
+                .AsNoTracking()
+                .Where(d =>
+                    !d.IsJobCompleted &&
+                    !string.IsNullOrWhiteSpace(d.ProductionRecordId) &&
+                    remainingProductionIds.Contains(d.ProductionRecordId))
                 .Select(d => new
                 {
                     d.ProductionRecordId,
@@ -164,8 +201,10 @@ namespace CpPrinting.Api.Controllers
                 var resolvedComponent = p.Components;
                 if (string.IsNullOrWhiteSpace(resolvedComponent))
                 {
-                    cpiByStoreIn.TryGetValue(p.StoreInRecordId, out var cpiForCut);
-                    var cpiCut = cpiForCut?.CutInspections?.FirstOrDefault(ci => ci.CutNo == p.CutNo);
+                    var cpiCut = cpiByStoreIn[p.StoreInRecordId]
+                        .SelectMany(report => report.CutInspections ?? new())
+                        .FirstOrDefault(ci => ci.CutNo == p.CutNo);
+
                     resolvedComponent = cpiCut?.Part ?? string.Empty;
                 }
 
@@ -221,10 +260,12 @@ namespace CpPrinting.Api.Controllers
             [FromQuery] string? component = null,
             [FromQuery] string? workerName = null,
             [FromQuery] string? tableNo = null,
+            [FromQuery] string? productionRecordId = null,
             [FromQuery] string? dateFrom = null,
             [FromQuery] string? dateTo = null)
         {
             var query = _context.DailyOutputRecords
+                .AsNoTracking()
                 .Where(r => !r.IsJobCompleted)
                 .AsQueryable();
 
@@ -246,6 +287,11 @@ namespace CpPrinting.Api.Controllers
             if (!string.IsNullOrWhiteSpace(component))    query = query.Where(r => r.Component == component);
             if (!string.IsNullOrWhiteSpace(workerName))   query = query.Where(r => r.WorkerName == workerName);
             if (!string.IsNullOrWhiteSpace(tableNo))      query = query.Where(r => r.TableNo == tableNo);
+            if (!string.IsNullOrWhiteSpace(productionRecordId))
+            {
+                var exactProductionId = productionRecordId.Trim();
+                query = query.Where(r => r.ProductionRecordId == exactProductionId);
+            }
 
             if (!string.IsNullOrWhiteSpace(dateFrom))
                 query = query.Where(r => r.Date != null && string.Compare(r.Date, dateFrom) >= 0);
@@ -268,6 +314,178 @@ namespace CpPrinting.Api.Controllers
                 Items = items, Total = total, Page = page, PageSize = pageSize,
                 TotalPages = (int)Math.Ceiling((double)total / pageSize)
             });
+        }
+
+
+        // Exact History Continue payload. This single request returns both the
+        // clicked Daily Output row and its linked Production allocation summary.
+        // It avoids two independent requests and prevents the Worker page from
+        // rendering before both records are available.
+        [HttpGet("daily-output/{id}/resume")]
+        public async Task<ActionResult> GetDailyOutputResume(string id)
+        {
+            if (string.IsNullOrWhiteSpace(id))
+                return BadRequest("Daily Output record ID is required.");
+
+            var exactId = id.Trim();
+
+            var record = await _context.DailyOutputRecords
+                .AsNoTracking()
+                .FirstOrDefaultAsync(r =>
+                    r.Id == exactId &&
+                    !r.IsJobCompleted);
+
+            if (record == null)
+                return NotFound("Daily Output record was not found.");
+
+            if (string.IsNullOrWhiteSpace(record.ProductionRecordId))
+                return BadRequest("This Daily Output record is missing its ProductionRecordId.");
+
+            var productionRecord = await _context.StoreProductionRecords
+                .AsNoTracking()
+                .FirstOrDefaultAsync(p =>
+                    p.Id == record.ProductionRecordId);
+
+            if (productionRecord == null)
+                return NotFound("The linked Production record was not found.");
+
+            var manuallyCompleted = await _context.DailyOutputRecords
+                .AsNoTracking()
+                .AnyAsync(d =>
+                    d.ProductionRecordId == productionRecord.Id &&
+                    d.IsJobCompleted);
+
+            if (manuallyCompleted)
+                return Conflict("This production job was manually completed and cannot be continued.");
+
+            var storeIn = await _context.StoreInRecords
+                .AsNoTracking()
+                .FirstOrDefaultAsync(s =>
+                    s.Id == productionRecord.StoreInRecordId);
+
+            var outputRows = await _context.DailyOutputRecords
+                .AsNoTracking()
+                .Where(d =>
+                    !d.IsJobCompleted &&
+                    d.ProductionRecordId == productionRecord.Id)
+                .Select(d => new
+                {
+                    d.TotalSeating,
+                    d.TotalPrinting,
+                    d.TotalCuring,
+                    d.TotalChecking,
+                    d.TotalPacking,
+                    d.TotalDispatch
+                })
+                .ToListAsync();
+
+            var seatingAllocated = outputRows.Sum(x => x.TotalSeating);
+            var printingAllocated = outputRows.Sum(x => x.TotalPrinting);
+            var curingAllocated = outputRows.Sum(x => x.TotalCuring);
+            var checkingAllocated = outputRows.Sum(x => x.TotalChecking);
+            var packingAllocated = outputRows.Sum(x => x.TotalPacking);
+            var dispatchAllocated = outputRows.Sum(x => x.TotalDispatch);
+
+            var seatingRemaining = Math.Max(0, productionRecord.IssueQty - seatingAllocated);
+            var printingRemaining = Math.Max(0, productionRecord.IssueQty - printingAllocated);
+            var curingRemaining = Math.Max(0, productionRecord.IssueQty - curingAllocated);
+            var checkingRemaining = Math.Max(0, productionRecord.IssueQty - checkingAllocated);
+            var packingRemaining = Math.Max(0, productionRecord.IssueQty - packingAllocated);
+            var dispatchRemaining = Math.Max(0, productionRecord.IssueQty - dispatchAllocated);
+
+            var remainingValues = new[]
+            {
+                seatingRemaining,
+                printingRemaining,
+                curingRemaining,
+                checkingRemaining,
+                packingRemaining,
+                dispatchRemaining
+            };
+
+            var allocatedValues = new[]
+            {
+                seatingAllocated,
+                printingAllocated,
+                curingAllocated,
+                checkingAllocated,
+                packingAllocated,
+                dispatchAllocated
+            };
+
+            var maxRemainingQty = remainingValues.Max();
+            var maxAllocatedQty = allocatedValues.Max();
+
+            var resolvedComponent =
+                !string.IsNullOrWhiteSpace(productionRecord.Components)
+                    ? productionRecord.Components
+                    : !string.IsNullOrWhiteSpace(record.Component)
+                        ? record.Component
+                        : storeIn?.Components ?? string.Empty;
+
+            record.TimeSlots ??= new List<TimeSlotEntry>();
+
+            var eligibleStyle = new
+            {
+                Id = productionRecord.Id,
+                ProductionRecordId = productionRecord.Id,
+                StoreInRecordId = productionRecord.StoreInRecordId,
+                SubmissionId = productionRecord.SubmissionId ?? storeIn?.SubmissionId ?? string.Empty,
+                StyleNo = productionRecord.StyleNo ?? record.StyleNo ?? string.Empty,
+                CustomerName = productionRecord.CustomerName ?? record.CustomerName ?? string.Empty,
+                ScheduleNo = storeIn?.ScheduleNo ?? string.Empty,
+                Components = resolvedComponent,
+                Component = resolvedComponent,
+                BodyColour = storeIn?.BodyColour ?? string.Empty,
+                CutNo = productionRecord.CutNo ?? record.CutNo ?? string.Empty,
+                LineNo = productionRecord.LineNo ?? string.Empty,
+                IssueDate = productionRecord.IssueDate ?? string.Empty,
+                OriginalQty = productionRecord.IssueQty,
+                DispatchedQty = maxAllocatedQty,
+                OrderQty = maxRemainingQty,
+
+                SeatingAllocated = seatingAllocated,
+                PrintingAllocated = printingAllocated,
+                CuringAllocated = curingAllocated,
+                CheckingAllocated = checkingAllocated,
+                PackingAllocated = packingAllocated,
+                DispatchAllocated = dispatchAllocated,
+
+                SeatingRemaining = seatingRemaining,
+                PrintingRemaining = printingRemaining,
+                CuringRemaining = curingRemaining,
+                CheckingRemaining = checkingRemaining,
+                PackingRemaining = packingRemaining,
+                DispatchRemaining = dispatchRemaining,
+            };
+
+            return Ok(new
+            {
+                Record = record,
+                EligibleStyle = eligibleStyle,
+                CanContinue = maxRemainingQty > 0,
+                Message = maxRemainingQty > 0
+                    ? string.Empty
+                    : "All production stages have reached the issued quantity."
+            });
+        }
+
+        // Exact History Continue lookup. DailyOutputRecord.Id is the primary
+        // key, so SQL Server can retrieve the clicked row directly.
+        [HttpGet("daily-output/{id}")]
+        public async Task<ActionResult<DailyOutputRecord>> GetDailyOutputRecordById(string id)
+        {
+            if (string.IsNullOrWhiteSpace(id))
+                return BadRequest("Daily Output record ID is required.");
+
+            var record = await _context.DailyOutputRecords
+                .AsNoTracking()
+                .FirstOrDefaultAsync(r => r.Id == id && !r.IsJobCompleted);
+
+            if (record == null)
+                return NotFound("Daily Output record was not found.");
+
+            return Ok(record);
         }
 
         [HttpPost("daily-output")]

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
 using CpPrinting.Api.Data;
+using System.Globalization;
 
 namespace CpPrinting.Api.Controllers
 {
@@ -40,10 +41,27 @@ namespace CpPrinting.Api.Controllers
             }
         }
 
+        private static string ResolveWorkerDate(string? workerDate)
+        {
+            if (!string.IsNullOrWhiteSpace(workerDate) &&
+                DateTime.TryParseExact(
+                    workerDate.Trim(),
+                    "yyyy-MM-dd",
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out var parsedDate))
+            {
+                return parsedDate.ToString("yyyy-MM-dd");
+            }
+
+            return GetDashboardToday();
+        }
+
         [HttpGet]
-        public async Task<ActionResult> GetDashboardData()
+        public async Task<ActionResult> GetDashboardData([FromQuery] string? workerDate = null)
         {
             var today = GetDashboardToday();
+            var selectedWorkerDate = ResolveWorkerDate(workerDate);
 
             // EF Core DbContext is NOT thread-safe — all queries must be sequential.
             // AsNoTracking() still gives a significant speed boost on read-only queries.
@@ -99,14 +117,24 @@ namespace CpPrinting.Api.Controllers
             var pendingAudits = await _context.AuditRecords.AsNoTracking().CountAsync(a => a.Status == "Pending");
 
             // --- Worker ---
-            var totalDailyOutput = await _context.DailyOutputRecords.AsNoTracking().CountAsync();
-            var todayOutputCount = await _context.DailyOutputRecords.AsNoTracking().CountAsync(d => d.Date == today);
-            var todaySeating     = await _context.DailyOutputRecords.AsNoTracking().Where(d => d.Date == today).SumAsync(d => d.TotalSeating);
-            var todayPrinting    = await _context.DailyOutputRecords.AsNoTracking().Where(d => d.Date == today).SumAsync(d => d.TotalPrinting);
-            var todayCuring      = await _context.DailyOutputRecords.AsNoTracking().Where(d => d.Date == today).SumAsync(d => d.TotalCuring);
-            var todayChecking    = await _context.DailyOutputRecords.AsNoTracking().Where(d => d.Date == today).SumAsync(d => d.TotalChecking);
-            var todayPacking     = await _context.DailyOutputRecords.AsNoTracking().Where(d => d.Date == today).SumAsync(d => d.TotalPacking);
-            var todayDispatch    = await _context.DailyOutputRecords.AsNoTracking().Where(d => d.Date == today).SumAsync(d => d.TotalDispatch);
+            // Completion marker rows are metadata only. They must not count as
+            // output entries or affect the selected date's section bars.
+            // `workerDate` lets the dashboard display historical Daily Output
+            // records when users enter or edit a previous day's production.
+            var workerOutputs = _context.DailyOutputRecords.AsNoTracking()
+                .Where(d => !d.IsJobCompleted);
+
+            var selectedDateWorkerOutputs = workerOutputs
+                .Where(d => d.Date == selectedWorkerDate);
+
+            var totalDailyOutput = await workerOutputs.CountAsync();
+            var todayOutputCount = await selectedDateWorkerOutputs.CountAsync();
+            var todaySeating     = await selectedDateWorkerOutputs.SumAsync(d => d.TotalSeating);
+            var todayPrinting    = await selectedDateWorkerOutputs.SumAsync(d => d.TotalPrinting);
+            var todayCuring      = await selectedDateWorkerOutputs.SumAsync(d => d.TotalCuring);
+            var todayChecking    = await selectedDateWorkerOutputs.SumAsync(d => d.TotalChecking);
+            var todayPacking     = await selectedDateWorkerOutputs.SumAsync(d => d.TotalPacking);
+            var todayDispatch    = await selectedDateWorkerOutputs.SumAsync(d => d.TotalDispatch);
             var totalDowntime    = await _context.DowntimeRecords.AsNoTracking().CountAsync();
             var pendingDowntime  = await _context.DowntimeRecords.AsNoTracking().CountAsync(d => !d.FullyAcknowledged);
 
@@ -181,6 +209,7 @@ namespace CpPrinting.Api.Controllers
                 },
                 worker = new
                 {
+                    selectedDate = selectedWorkerDate,
                     totalDailyOutput,
                     todayOutput   = todayOutputCount,
                     todaySeating,
@@ -264,7 +293,8 @@ namespace CpPrinting.Api.Controllers
                     productionCount = 0, totalIssued = 0,
                     dispatchCount = 0, totalDispatched = 0, dispatchedPct = 0.0,
                     auditTotal = 0, auditPassed = 0, auditFailed = 0,
-                    workerEntries = 0, totalWorkerOutput = 0
+                    workerEntries = 0, totalWorkerOutput = 0,
+                    latestWorkerDate = string.Empty
                 }));
             }
 
@@ -307,14 +337,22 @@ namespace CpPrinting.Api.Controllers
                 .ToListAsync();
 
             var workerData = await _context.DailyOutputRecords.AsNoTracking()
-                .Where(d => allStoreInIds.Contains(EF.Functions.Collate(d.StoreInRecordId, DashboardStringCollation)))
+                .Where(d => !d.IsJobCompleted &&
+                            allStoreInIds.Contains(EF.Functions.Collate(d.StoreInRecordId, DashboardStringCollation)))
                 .GroupBy(d => d.StoreInRecordId)
                 .Select(g => new
                 {
                     StoreInRecordId = g.Key,
-                    Entries     = g.Count(),
-                    TotalOutput = g.Sum(d => d.TotalSeating + d.TotalPrinting + d.TotalCuring +
-                                             d.TotalChecking + d.TotalPacking + d.TotalDispatch)
+                    Entries  = g.Count(),
+                    Seating  = g.Sum(d => d.TotalSeating),
+                    Printing = g.Sum(d => d.TotalPrinting),
+                    Curing   = g.Sum(d => d.TotalCuring),
+                    Checking = g.Sum(d => d.TotalChecking),
+                    Packing  = g.Sum(d => d.TotalPacking),
+                    Dispatch = g.Sum(d => d.TotalDispatch),
+
+                    // Used only to order the Worker dashboard's recent styles.
+                    LatestWorkerDate = g.Max(d => d.Date)
                 })
                 .ToListAsync();
 
@@ -349,6 +387,9 @@ namespace CpPrinting.Api.Controllers
                 int workerEntries = 0, totalWorkerOutput = 0;
                 int totalCuts = 0;
 
+                // Used only to order the Worker dashboard's recent styles.
+                var latestWorkerDate = string.Empty;
+
                 foreach (var sid in storeInIds)
                 {
                     if (productionByStoreIn.TryGetValue(sid, out var prod))
@@ -364,7 +405,28 @@ namespace CpPrinting.Api.Controllers
                     { auditTotal += aud.Total; auditPassed += aud.Passed; auditFailed += aud.Failed; }
 
                     if (workerByStoreIn.TryGetValue(sid, out var wrk))
-                    { workerEntries += wrk.Entries; totalWorkerOutput += wrk.TotalOutput; }
+                    {
+                        workerEntries += wrk.Entries;
+
+                        // The six worker stages are independent. Do not add them
+                        // together. The current progressed quantity is the highest
+                        // independently allocated stage quantity.
+                        totalWorkerOutput += new[]
+                        {
+                            wrk.Seating,
+                            wrk.Printing,
+                            wrk.Curing,
+                            wrk.Checking,
+                            wrk.Packing,
+                            wrk.Dispatch
+                        }.Max();
+
+                        var workerDate = wrk.LatestWorkerDate ?? string.Empty;
+                        if (string.CompareOrdinal(workerDate, latestWorkerDate) > 0)
+                        {
+                            latestWorkerDate = workerDate;
+                        }
+                    }
 
                     if (cutsByStoreIn.TryGetValue(sid, out var cuts))
                     { totalCuts += cuts.Count; }
@@ -399,7 +461,8 @@ namespace CpPrinting.Api.Controllers
                     totalDispatched,
                     dispatchedPct = bulkQty > 0 ? Math.Round((double)totalDispatched / bulkQty * 100, 1) : 0.0,
                     auditTotal, auditPassed, auditFailed,
-                    workerEntries, totalWorkerOutput
+                    workerEntries, totalWorkerOutput,
+                    latestWorkerDate
                 };
             })
             .OrderByDescending(s => s.stage == "Completed" ? 0 : 1)
