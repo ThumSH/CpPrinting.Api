@@ -32,6 +32,10 @@ namespace CpPrinting.Api.Data
         public DbSet<SampleStyle> SampleStyles { get; set; }
         public DbSet<ReconciliationReportRecord> ReconciliationReports { get; set; }
 
+        public DbSet<TaxInvoice> TaxInvoices { get; set; }
+        public DbSet<TaxInvoiceItem> TaxInvoiceItems { get; set; }
+        public DbSet<InvoiceSecuritySetting> InvoiceSecuritySettings { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
@@ -109,6 +113,37 @@ namespace CpPrinting.Api.Data
                         : JsonSerializer.Deserialize<List<SampleStyleRevision>>(v,
                                 (JsonSerializerOptions?)null) ?? new()
                 );
+             modelBuilder.Entity<TaxInvoice>()
+                .HasMany(invoice => invoice.Items)
+                .WithOne(item => item.TaxInvoice)
+                .HasForeignKey(item => item.TaxInvoiceId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // Prevent duplicate Tax Invoice numbers.
+            modelBuilder.Entity<TaxInvoice>()
+                .HasIndex(invoice => invoice.InvoiceNumber)
+                .IsUnique();
+
+            // Search indexes used by Invoice Search.
+            modelBuilder.Entity<TaxInvoice>()
+                .HasIndex(invoice => invoice.InvoiceDate);
+
+            modelBuilder.Entity<TaxInvoice>()
+                .HasIndex(invoice => invoice.SupplierTin);
+
+            modelBuilder.Entity<TaxInvoice>()
+                .HasIndex(invoice => invoice.PurchaserTin);
+
+            modelBuilder.Entity<TaxInvoice>()
+                .HasIndex(invoice => invoice.CreatedAt);
+
+            modelBuilder.Entity<TaxInvoiceItem>()
+                .HasIndex(item => item.TaxInvoiceId);
+
+            // There must be only one invoice security settings row.
+            modelBuilder.Entity<InvoiceSecuritySetting>()
+                .Property(setting => setting.Id)
+                .HasDefaultValue("invoice-security");
         }
     }
 }
