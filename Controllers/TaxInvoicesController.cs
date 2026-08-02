@@ -1,3 +1,4 @@
+using System.Globalization;
 using CpPrinting.Api.Data;
 using CpPrinting.Api.DTOs;
 using CpPrinting.Api.Models;
@@ -249,8 +250,16 @@ namespace CpPrinting.Api.Controllers
                 CreatedAt = DateTime.UtcNow
             };
 
-            ApplyEditableFields(invoice, request);
-            invoice.Items = BuildItems(invoice.Id, request.Items);
+            invoice.Items = BuildItems(
+                invoice.Id,
+                request.Items
+            );
+
+            ApplyEditableFields(
+                invoice,
+                request,
+                invoice.Items
+            );
 
             _context.TaxInvoices.Add(invoice);
             await _context.SaveChangesAsync();
@@ -334,12 +343,20 @@ namespace CpPrinting.Api.Controllers
             }
 
             invoice.InvoiceNumber = invoiceNumber;
-            ApplyEditableFields(invoice, request);
 
-            // Replace rows so the stored order and manually entered values
-            // exactly match the edited report.
+            // Replace rows so the stored order exactly matches the edited report.
             _context.TaxInvoiceItems.RemoveRange(invoice.Items);
-            invoice.Items = BuildItems(invoice.Id, request.Items);
+
+            invoice.Items = BuildItems(
+                invoice.Id,
+                request.Items
+            );
+
+            ApplyEditableFields(
+                invoice,
+                request,
+                invoice.Items
+            );
 
             invoice.UpdatedBy =
                 User.Identity?.Name ?? "unknown";
@@ -438,10 +455,30 @@ namespace CpPrinting.Api.Controllers
                 return "Date of Invoice is required.";
             }
 
+            if (!DateOnly.TryParseExact(
+                    Clean(request.InvoiceDate),
+                    "yyyy-MM-dd",
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out _))
+            {
+                return "Date of Invoice must use MM/DD/YY in the form.";
+            }
+
             if (string.IsNullOrWhiteSpace(
                     request.DeliveryDate))
             {
                 return "Date of Delivery is required.";
+            }
+
+            if (!DateOnly.TryParseExact(
+                    Clean(request.DeliveryDate),
+                    "yyyy-MM-dd",
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out _))
+            {
+                return "Date of Delivery must use MM/DD/YY in the form.";
             }
 
             if (request.Items == null)
@@ -449,83 +486,275 @@ namespace CpPrinting.Api.Controllers
                 return "Invoice item rows are required.";
             }
 
+            if (!TryParseVatPercentage(
+                    request.VatPercentage,
+                    out _))
+            {
+                return "VAT percentage must be a number from 0 to 100.";
+            }
+
+            var itemIndex = 0;
+
+            foreach (var item in request.Items)
+            {
+                itemIndex += 1;
+
+                var quantity = Clean(item.Quantity);
+                var unitPrice = Clean(item.UnitPrice);
+
+                var hasQuantity =
+                    !string.IsNullOrWhiteSpace(quantity);
+
+                var hasUnitPrice =
+                    !string.IsNullOrWhiteSpace(unitPrice);
+
+                if (!hasQuantity && !hasUnitPrice)
+                {
+                    continue;
+                }
+
+                if (!hasQuantity || !hasUnitPrice)
+                {
+                    return
+                        $"Invoice row {itemIndex} requires both quantity and unit price.";
+                }
+
+                if (!TryParseNonNegativeDecimal(
+                        quantity,
+                        out _))
+                {
+                    return
+                        $"Invoice row {itemIndex} has an invalid quantity.";
+                }
+
+                if (!TryParseNonNegativeDecimal(
+                        unitPrice,
+                        out _))
+                {
+                    return
+                        $"Invoice row {itemIndex} has an invalid unit price.";
+                }
+            }
+
             return null;
         }
 
         private static void ApplyEditableFields(
             TaxInvoice invoice,
-            TaxInvoiceSaveRequestDto request)
+            TaxInvoiceSaveRequestDto request,
+            IReadOnlyCollection<TaxInvoiceItem> items)
         {
             invoice.InvoiceDate =
-                request.InvoiceDate.Trim();
+                Clean(request.InvoiceDate);
 
             invoice.SupplierTin =
-                request.SupplierTin.Trim();
+                Clean(request.SupplierTin);
 
             invoice.SupplierName =
-                request.SupplierName.Trim();
+                Clean(request.SupplierName);
 
             invoice.SupplierAddress =
-                request.SupplierAddress.Trim();
+                Clean(request.SupplierAddress);
 
             invoice.SupplierTelephone =
-                request.SupplierTelephone.Trim();
+                Clean(request.SupplierTelephone);
 
             invoice.PurchaserTin =
-                request.PurchaserTin.Trim();
+                Clean(request.PurchaserTin);
 
             invoice.PurchaserName =
-                request.PurchaserName.Trim();
+                Clean(request.PurchaserName);
 
             invoice.PurchaserAddress =
-                request.PurchaserAddress.Trim();
+                Clean(request.PurchaserAddress);
 
             invoice.PurchaserTelephone =
-                request.PurchaserTelephone.Trim();
+                Clean(request.PurchaserTelephone);
 
             invoice.DeliveryDate =
-                request.DeliveryDate.Trim();
+                Clean(request.DeliveryDate);
 
             invoice.PlaceOfSupply =
-                request.PlaceOfSupply.Trim();
+                Clean(request.PlaceOfSupply);
 
             invoice.AdditionalInformation =
-                request.AdditionalInformation.Trim();
+                Clean(request.AdditionalInformation);
+
+            TryParseVatPercentage(
+                request.VatPercentage,
+                out var vatPercentage
+            );
+
+            var totalValue = items
+                .Sum(item =>
+                    ParseStoredAmount(
+                        item.AmountExcludingVat
+                    )
+                );
+
+            totalValue = decimal.Round(
+                totalValue,
+                2,
+                MidpointRounding.AwayFromZero
+            );
+
+            var vatAmount = decimal.Round(
+                totalValue *
+                    (vatPercentage / 100m),
+                0,
+                MidpointRounding.AwayFromZero
+            );
+
+            var totalIncludingVat =
+                decimal.Round(
+                    totalValue + vatAmount,
+                    2,
+                    MidpointRounding.AwayFromZero
+                );
+
+            invoice.VatPercentage =
+                FormatPercentage(vatPercentage);
 
             invoice.TotalValueOfSupply =
-                request.TotalValueOfSupply.Trim();
+                FormatMoney(totalValue);
 
             invoice.VatAmount =
-                request.VatAmount.Trim();
+                vatAmount.ToString(
+                    "0",
+                    CultureInfo.InvariantCulture
+                );
 
             invoice.TotalAmountIncludingVat =
-                request.TotalAmountIncludingVat.Trim();
+                FormatMoney(totalIncludingVat);
 
             invoice.TotalAmountInWords =
-                request.TotalAmountInWords.Trim();
+                Clean(request.TotalAmountInWords)
+                    .ToUpperInvariant();
 
             invoice.ModeOfPayment =
-                request.ModeOfPayment.Trim();
+                Clean(request.ModeOfPayment);
         }
 
         private static List<TaxInvoiceItem> BuildItems(
             string invoiceId,
             IEnumerable<TaxInvoiceItemRequestDto>? items)
         {
-            return (items ?? Array.Empty<TaxInvoiceItemRequestDto>())
-                .Select((item, index) => new TaxInvoiceItem
+            return (
+                items ??
+                Array.Empty<TaxInvoiceItemRequestDto>()
+            )
+            .Select((item, index) =>
+            {
+                var quantity =
+                    Clean(item.Quantity);
+
+                var unitPrice =
+                    Clean(item.UnitPrice);
+
+                var amount =
+                    string.IsNullOrWhiteSpace(quantity) &&
+                    string.IsNullOrWhiteSpace(unitPrice)
+                        ? string.Empty
+                        : FormatMoney(
+                            ParseStoredAmount(quantity) *
+                            ParseStoredAmount(unitPrice)
+                        );
+
+                return new TaxInvoiceItem
                 {
                     Id = Guid.NewGuid().ToString(),
                     TaxInvoiceId = invoiceId,
                     RowOrder = index + 1,
-                    Reference = item.Reference.Trim(),
-                    Description = item.Description.Trim(),
-                    Quantity = item.Quantity.Trim(),
-                    UnitPrice = item.UnitPrice.Trim(),
-                    AmountExcludingVat =
-                        item.AmountExcludingVat.Trim()
-                })
-                .ToList();
+                    Reference =
+                        Clean(item.Reference),
+                    Description =
+                        Clean(item.Description),
+                    Quantity = quantity,
+                    UnitPrice = unitPrice,
+                    AmountExcludingVat = amount
+                };
+            })
+            .ToList();
+        }
+
+        private static bool TryParseVatPercentage(
+            string? value,
+            out decimal percentage)
+        {
+            var cleaned = Clean(value);
+
+            if (string.IsNullOrWhiteSpace(cleaned))
+            {
+                percentage = 18m;
+                return true;
+            }
+
+            if (!TryParseNonNegativeDecimal(
+                    cleaned,
+                    out percentage))
+            {
+                return false;
+            }
+
+            return percentage <= 100m;
+        }
+
+        private static bool TryParseNonNegativeDecimal(
+            string? value,
+            out decimal parsed)
+        {
+            var cleaned = Clean(value);
+
+            var valid = decimal.TryParse(
+                cleaned,
+                NumberStyles.Number,
+                CultureInfo.InvariantCulture,
+                out parsed
+            );
+
+            return valid && parsed >= 0m;
+        }
+
+        private static decimal ParseStoredAmount(
+            string? value)
+        {
+            return decimal.TryParse(
+                Clean(value),
+                NumberStyles.Number,
+                CultureInfo.InvariantCulture,
+                out var parsed
+            )
+                ? parsed
+                : 0m;
+        }
+
+        private static string FormatMoney(
+            decimal value)
+        {
+            return decimal.Round(
+                    value,
+                    2,
+                    MidpointRounding.AwayFromZero
+                )
+                .ToString(
+                    "0.00",
+                    CultureInfo.InvariantCulture
+                );
+        }
+
+        private static string FormatPercentage(
+            decimal value)
+        {
+            return value.ToString(
+                "0.##",
+                CultureInfo.InvariantCulture
+            );
+        }
+
+        private static string Clean(
+            string? value)
+        {
+            return value?.Trim() ?? string.Empty;
         }
 
         private static TaxInvoiceResponseDto ToResponse(
@@ -551,6 +780,12 @@ namespace CpPrinting.Api.Controllers
                 PlaceOfSupply = invoice.PlaceOfSupply,
                 AdditionalInformation =
                     invoice.AdditionalInformation,
+
+                VatPercentage =
+                    string.IsNullOrWhiteSpace(
+                        invoice.VatPercentage)
+                        ? "18"
+                        : invoice.VatPercentage,
 
                 TotalValueOfSupply =
                     invoice.TotalValueOfSupply,

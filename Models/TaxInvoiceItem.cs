@@ -14,15 +14,16 @@ namespace CpPrinting.Api.Models
         [ForeignKey(nameof(TaxInvoiceId))]
         public TaxInvoice? TaxInvoice { get; set; }
 
-        // Preserves the exact manual row order entered on the invoice.
+        // Preserves the invoice row order.
         public int RowOrder { get; set; }
 
         public string Reference { get; set; } = string.Empty;
         public string Description { get; set; } = string.Empty;
 
-        // Manual values: no automatic calculations are performed.
         public string Quantity { get; set; } = string.Empty;
         public string UnitPrice { get; set; } = string.Empty;
+
+        // Calculated from Quantity × UnitPrice.
         public string AmountExcludingVat { get; set; } = string.Empty;
     }
 }
