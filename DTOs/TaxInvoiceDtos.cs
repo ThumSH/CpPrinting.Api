@@ -28,10 +28,14 @@ namespace CpPrinting.Api.DTOs
         public string PlaceOfSupply { get; set; } = string.Empty;
         public string AdditionalInformation { get; set; } = string.Empty;
 
-        // All calculations remain manual.
+        // Older clients that do not send this property safely continue at 18%.
+        public string VatPercentage { get; set; } = "18";
+
+        // Retained for API compatibility. The backend recalculates these values.
         public string TotalValueOfSupply { get; set; } = string.Empty;
         public string VatAmount { get; set; } = string.Empty;
         public string TotalAmountIncludingVat { get; set; } = string.Empty;
+
         public string TotalAmountInWords { get; set; } = string.Empty;
         public string ModeOfPayment { get; set; } = string.Empty;
 
@@ -85,6 +89,7 @@ namespace CpPrinting.Api.DTOs
         public string PlaceOfSupply { get; set; } = string.Empty;
         public string AdditionalInformation { get; set; } = string.Empty;
 
+        public string VatPercentage { get; set; } = "18";
         public string TotalValueOfSupply { get; set; } = string.Empty;
         public string VatAmount { get; set; } = string.Empty;
         public string TotalAmountIncludingVat { get; set; } = string.Empty;

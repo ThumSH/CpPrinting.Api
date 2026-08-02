@@ -26,8 +26,9 @@ namespace CpPrinting.Api.Models
         public string PlaceOfSupply { get; set; } = string.Empty;
         public string AdditionalInformation { get; set; } = string.Empty;
 
-        // These fields are intentionally strings because every value is entered
-        // manually and must be stored exactly as the user typed it.
+        // Existing amount columns remain strings for backwards compatibility.
+        // New invoices are calculated by the client and verified by the API.
+        public string VatPercentage { get; set; } = "18";
         public string TotalValueOfSupply { get; set; } = string.Empty;
         public string VatAmount { get; set; } = string.Empty;
         public string TotalAmountIncludingVat { get; set; } = string.Empty;
