@@ -36,6 +36,8 @@ namespace CpPrinting.Api.Data
         public DbSet<TaxInvoiceItem> TaxInvoiceItems { get; set; }
         public DbSet<InvoiceSecuritySetting> InvoiceSecuritySettings { get; set; }
 
+        public DbSet<Customer> Customers { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
@@ -144,6 +146,18 @@ namespace CpPrinting.Api.Data
             modelBuilder.Entity<InvoiceSecuritySetting>()
                 .Property(setting => setting.Id)
                 .HasDefaultValue("invoice-security");
+
+            modelBuilder.Entity<Customer>()
+                .HasIndex(customer => customer.CustomerCode)
+                .IsUnique();
+
+            // Used when loading and sorting the purchaser dropdown.
+            modelBuilder.Entity<Customer>()
+                .HasIndex(customer => customer.CustomerName);
+
+            // Used for customer and purchaser lookups.
+            modelBuilder.Entity<Customer>()
+                .HasIndex(customer => customer.TinNumber);
         }
     }
 }
