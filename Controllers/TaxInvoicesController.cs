@@ -16,6 +16,9 @@ namespace CpPrinting.Api.Controllers
     {
         private const string SecuritySettingId = "invoice-security";
 
+        private const string DefaultModeOfPayment =
+        "CREDIT - NET 30 DAYS";
+
         private readonly AppDbContext _context;
         private readonly ActivityLogger _logger;
 
@@ -574,8 +577,9 @@ namespace CpPrinting.Api.Controllers
             invoice.DeliveryDate =
                 Clean(request.DeliveryDate);
 
+           // Place of Supply always follows the supplier name.
             invoice.PlaceOfSupply =
-                Clean(request.PlaceOfSupply);
+                invoice.SupplierName;
 
             invoice.AdditionalInformation =
                 Clean(request.AdditionalInformation);
@@ -619,10 +623,7 @@ namespace CpPrinting.Api.Controllers
                 FormatMoney(totalValue);
 
             invoice.VatAmount =
-                vatAmount.ToString(
-                    "0",
-                    CultureInfo.InvariantCulture
-                );
+                 FormatMoney(vatAmount);
 
             invoice.TotalAmountIncludingVat =
                 FormatMoney(totalIncludingVat);
@@ -632,7 +633,7 @@ namespace CpPrinting.Api.Controllers
                     .ToUpperInvariant();
 
             invoice.ModeOfPayment =
-                Clean(request.ModeOfPayment);
+                DefaultModeOfPayment;
         }
 
         private static List<TaxInvoiceItem> BuildItems(
