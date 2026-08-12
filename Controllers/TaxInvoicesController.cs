@@ -496,6 +496,35 @@ namespace CpPrinting.Api.Controllers
                 return "VAT percentage must be a number from 0 to 100.";
             }
 
+            var exchangeRateText =
+                Clean(request.ExchangeRate);
+
+            if (!string.IsNullOrWhiteSpace(
+                    exchangeRateText))
+            {
+                if (!TryParseNonNegativeDecimal(
+                        exchangeRateText,
+                        out var exchangeRate) ||
+                    exchangeRate <= 0m)
+                {
+                    return
+                        "Exchange rate must be a number greater than 0.";
+                }
+            }
+
+            var lkrTotalText =
+                Clean(request.TotalAmountIncludingVatLkr);
+
+            if (!string.IsNullOrWhiteSpace(
+                    lkrTotalText) &&
+                !TryParseNonNegativeDecimal(
+                    lkrTotalText,
+                    out _))
+            {
+                return
+                    "Converted LKR amount must be a valid number.";
+            }
+
             var itemIndex = 0;
 
             foreach (var item in request.Items)
@@ -577,7 +606,7 @@ namespace CpPrinting.Api.Controllers
             invoice.DeliveryDate =
                 Clean(request.DeliveryDate);
 
-           // Place of Supply always follows the supplier name.
+            // Place of Supply always follows the supplier name.
             invoice.PlaceOfSupply =
                 invoice.SupplierName;
 
@@ -623,10 +652,16 @@ namespace CpPrinting.Api.Controllers
                 FormatMoney(totalValue);
 
             invoice.VatAmount =
-                 FormatMoney(vatAmount);
+                FormatMoney(vatAmount);
 
             invoice.TotalAmountIncludingVat =
                 FormatMoney(totalIncludingVat);
+
+            ApplyLkrFields(
+                invoice,
+                request,
+                vatPercentage
+            );
 
             invoice.TotalAmountInWords =
                 Clean(request.TotalAmountInWords)
@@ -634,6 +669,75 @@ namespace CpPrinting.Api.Controllers
 
             invoice.ModeOfPayment =
                 DefaultModeOfPayment;
+        }
+
+        private static void ApplyLkrFields(
+            TaxInvoice invoice,
+            TaxInvoiceSaveRequestDto request,
+            decimal vatPercentage)
+        {
+            // Exchange rate is manually entered for reference only.
+            // It must never be used to calculate the LKR invoice values.
+            invoice.ExchangeRate =
+                Clean(request.ExchangeRate);
+
+            var lkrTotalText =
+                Clean(request.TotalAmountIncludingVatLkr);
+
+            if (string.IsNullOrWhiteSpace(
+                    lkrTotalText) ||
+                !TryParseNonNegativeDecimal(
+                    lkrTotalText,
+                    out var lkrTotal))
+            {
+                invoice.TotalValueOfSupplyLkr =
+                    string.Empty;
+
+                invoice.VatAmountLkr =
+                    string.Empty;
+
+                invoice.TotalAmountIncludingVatLkr =
+                    string.Empty;
+
+                return;
+            }
+
+            lkrTotal = decimal.Round(
+                lkrTotal,
+                2,
+                MidpointRounding.AwayFromZero
+            );
+
+            // The user manually enters the final LKR total.
+            // Split that exact total into supply + VAT using the
+            // currently selected VAT percentage.
+            var lkrSupply =
+                vatPercentage == 0m
+                    ? lkrTotal
+                    : decimal.Round(
+                        lkrTotal /
+                            (
+                                1m +
+                                vatPercentage / 100m
+                            ),
+                        2,
+                        MidpointRounding.AwayFromZero
+                    );
+
+            var lkrVat = decimal.Round(
+                lkrTotal - lkrSupply,
+                2,
+                MidpointRounding.AwayFromZero
+            );
+
+            invoice.TotalValueOfSupplyLkr =
+                FormatMoney(lkrSupply);
+
+            invoice.VatAmountLkr =
+                FormatMoney(lkrVat);
+
+            invoice.TotalAmountIncludingVatLkr =
+                FormatMoney(lkrTotal);
         }
 
         private static List<TaxInvoiceItem> BuildItems(
@@ -795,6 +899,17 @@ namespace CpPrinting.Api.Controllers
 
                 TotalAmountIncludingVat =
                     invoice.TotalAmountIncludingVat,
+
+                ExchangeRate =
+                invoice.ExchangeRate,
+
+                TotalValueOfSupplyLkr =
+                    invoice.TotalValueOfSupplyLkr,
+                VatAmountLkr =
+                    invoice.VatAmountLkr,
+
+                TotalAmountIncludingVatLkr =
+                    invoice.TotalAmountIncludingVatLkr,
 
                 TotalAmountInWords =
                     invoice.TotalAmountInWords,

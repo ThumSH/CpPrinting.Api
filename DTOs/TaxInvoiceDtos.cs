@@ -36,6 +36,18 @@ namespace CpPrinting.Api.DTOs
         public string VatAmount { get; set; } = string.Empty;
         public string TotalAmountIncludingVat { get; set; } = string.Empty;
 
+        public string ExchangeRate { get; set; } =
+    string.Empty;
+
+            public string TotalValueOfSupplyLkr { get; set; } =
+                string.Empty;
+
+            public string VatAmountLkr { get; set; } =
+                string.Empty;
+
+            public string TotalAmountIncludingVatLkr { get; set; } =
+                string.Empty;
+
         public string TotalAmountInWords { get; set; } = string.Empty;
         public string ModeOfPayment { get; set; } = string.Empty;
 
@@ -93,6 +105,19 @@ namespace CpPrinting.Api.DTOs
         public string TotalValueOfSupply { get; set; } = string.Empty;
         public string VatAmount { get; set; } = string.Empty;
         public string TotalAmountIncludingVat { get; set; } = string.Empty;
+
+        public string ExchangeRate { get; set; } =
+    string.Empty;
+
+public string TotalValueOfSupplyLkr { get; set; } =
+    string.Empty;
+
+public string VatAmountLkr { get; set; } =
+    string.Empty;
+
+public string TotalAmountIncludingVatLkr { get; set; } =
+    string.Empty;
+    
         public string TotalAmountInWords { get; set; } = string.Empty;
         public string ModeOfPayment { get; set; } = string.Empty;
 

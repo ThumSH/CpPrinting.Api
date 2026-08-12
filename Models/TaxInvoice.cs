@@ -32,6 +32,17 @@ namespace CpPrinting.Api.Models
         public string TotalValueOfSupply { get; set; } = string.Empty;
         public string VatAmount { get; set; } = string.Empty;
         public string TotalAmountIncludingVat { get; set; } = string.Empty;
+
+        // LKR conversion values.
+        // ExchangeRate is entered manually by the user.
+        // All LKR totals are calculated from the verified USD totals.
+        public string ExchangeRate { get; set; } = string.Empty;
+
+        public string TotalValueOfSupplyLkr { get; set; } = string.Empty;
+
+        public string VatAmountLkr { get; set; } = string.Empty;
+
+        public string TotalAmountIncludingVatLkr { get; set; } = string.Empty;
         public string TotalAmountInWords { get; set; } = string.Empty;
         public string ModeOfPayment { get; set; } = string.Empty;
 
