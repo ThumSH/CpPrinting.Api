@@ -677,18 +677,22 @@ namespace CpPrinting.Api.Controllers
             decimal vatPercentage)
         {
             // Exchange rate is manually entered for reference only.
-            // It must never be used to calculate the LKR invoice values.
+            // It is not used to calculate the LKR invoice values.
             invoice.ExchangeRate =
                 Clean(request.ExchangeRate);
 
             var lkrTotalText =
-                Clean(request.TotalAmountIncludingVatLkr);
+                Clean(
+                    request.TotalAmountIncludingVatLkr
+                );
 
-            if (string.IsNullOrWhiteSpace(
+            if (
+                string.IsNullOrWhiteSpace(
                     lkrTotalText) ||
                 !TryParseNonNegativeDecimal(
                     lkrTotalText,
-                    out var lkrTotal))
+                    out var lkrTotal)
+            )
             {
                 invoice.TotalValueOfSupplyLkr =
                     string.Empty;
@@ -708,24 +712,30 @@ namespace CpPrinting.Api.Controllers
                 MidpointRounding.AwayFromZero
             );
 
-            // The user manually enters the final LKR total.
-            // Split that exact total into supply + VAT using the
-            // currently selected VAT percentage.
-            var lkrSupply =
+            var rawLkrSupply =
                 vatPercentage == 0m
                     ? lkrTotal
-                    : decimal.Round(
-                        lkrTotal /
-                            (
-                                1m +
-                                vatPercentage / 100m
-                            ),
-                        2,
-                        MidpointRounding.AwayFromZero
-                    );
+                    : lkrTotal /
+                        (
+                            1m +
+                            vatPercentage / 100m
+                        );
 
+            var rawLkrVat =
+                lkrTotal - rawLkrSupply;
+
+            // Round VAT to the nearest whole LKR.
+            // Example: 29472.89 -> 29473.00
             var lkrVat = decimal.Round(
-                lkrTotal - lkrSupply,
+                rawLkrVat,
+                0,
+                MidpointRounding.AwayFromZero
+            );
+
+            // Adjust supply so that:
+            // supply + rounded VAT = exact LKR total.
+            var lkrSupply = decimal.Round(
+                lkrTotal - lkrVat,
                 2,
                 MidpointRounding.AwayFromZero
             );
