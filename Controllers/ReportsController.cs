@@ -10,7 +10,7 @@ using CpPrinting.Api.Models;
 
 namespace CpPrinting.Api.Controllers
 {
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = "SuperAdmin")]
     [Route("api/[controller]")]
     [ApiController]
     public class ReportsController : ControllerBase
@@ -197,6 +197,7 @@ namespace CpPrinting.Api.Controllers
             if (report == null)
                 return BadRequest("Unknown report section.");
 
+            await ApplySessionStatsToEmployeeRows(report.EmployeeRows, filter);
             ApplyReportEmployeeFilters(report, filter);
 
             report.GeneratedAt = NowStamp();
@@ -224,19 +225,32 @@ namespace CpPrinting.Api.Controllers
         }
 
         [HttpGet("users")]
-        public async Task<ActionResult<IEnumerable<UserReportRowDto>>> GetUsersReport([FromQuery] string? role = null)
+        public async Task<ActionResult<IEnumerable<UserReportRowDto>>> GetUsersReport(
+            [FromQuery] string? role = null,
+            [FromQuery] string? dateFrom = null,
+            [FromQuery] string? dateTo = null)
         {
             var roleFilter = Clean(role);
+            var range = ResolveDateRange(dateFrom, dateTo);
+            var toEnd = ToEndOfDay(range.To);
+
             var usersQuery = _context.Users.AsNoTracking();
             if (!string.IsNullOrWhiteSpace(roleFilter))
                 usersQuery = usersQuery.Where(u => u.Role == roleFilter);
 
             var users = await usersQuery.OrderBy(u => u.Name).ToListAsync();
-            var logs = await _context.ActivityLogs.AsNoTracking().ToListAsync();
+
+            var logs = await _context.ActivityLogs.AsNoTracking()
+                .Where(l => !string.IsNullOrEmpty(l.Timestamp) && string.Compare(l.Timestamp, range.From) >= 0 && string.Compare(l.Timestamp, toEnd) <= 0)
+                .ToListAsync();
+
+            var sessions = await LoadUserSessions(range.From, range.To, roleFilter);
 
             var rows = users.Select(u =>
             {
                 var userLogs = logs.Where(l => LogBelongsToUser(l, u)).ToList();
+                var userSessions = sessions.Where(s => SessionBelongsToUser(s, u)).ToList();
+                var sessionStats = BuildSessionStats(userSessions);
                 var lastActivity = userLogs.OrderByDescending(l => l.Timestamp).FirstOrDefault();
                 var lastLogin = userLogs.Where(l => l.Action == "Login").OrderByDescending(l => l.Timestamp).FirstOrDefault();
 
@@ -247,8 +261,22 @@ namespace CpPrinting.Api.Controllers
                     Username = u.Username,
                     Role = u.Role,
                     ActivityCount = userLogs.Count,
-                    LastLogin = lastLogin?.Timestamp ?? string.Empty,
-                    LastActivity = lastActivity?.Timestamp ?? string.Empty
+                    LastLogin = lastLogin?.Timestamp ?? sessionStats.LastLogin,
+                    LastActivity = lastActivity?.Timestamp ?? sessionStats.LastSeen,
+                    LoginCount = sessionStats.LoginCount,
+                    SystemLoginTime = sessionStats.SystemLoginTime,
+                    IdleTime = sessionStats.IdleTime,
+                    UserLogoutCount = sessionStats.UserLogoutCount,
+                    UserLogoutTime = sessionStats.UserLogoutTime,
+                    SystemLogoutCount = sessionStats.SystemLogoutCount,
+                    SystemLogoutTime = sessionStats.SystemLogoutTime,
+                    TotalLoginSeconds = sessionStats.TotalLoginSeconds,
+                    TotalIdleSeconds = sessionStats.TotalIdleSeconds,
+                    TotalActiveSeconds = sessionStats.TotalActiveSeconds,
+                    TotalLoginTime = sessionStats.TotalLoginTime,
+                    TotalIdleTime = sessionStats.TotalIdleTime,
+                    TotalActiveTime = sessionStats.TotalActiveTime,
+                    CurrentStatus = sessionStats.CurrentStatus
                 };
             }).ToList();
 
@@ -784,6 +812,8 @@ namespace CpPrinting.Api.Controllers
                 .Where(a => !string.IsNullOrEmpty(a.Timestamp) && string.Compare(a.Timestamp, from) >= 0 && string.Compare(a.Timestamp, toEnd) <= 0)
                 .ToListAsync();
 
+            var userSessions = await LoadUserSessions(from, to, string.Empty);
+
             return new ReportSnapshot
             {
                 SampleStyles = sampleStyles,
@@ -792,7 +822,8 @@ namespace CpPrinting.Api.Controllers
                 CpiReports = cpiReports,
                 AdviceNotes = adviceNotes,
                 DailyOutputs = dailyOutputs,
-                ActivityLogs = activityLogs
+                ActivityLogs = activityLogs,
+                UserSessions = userSessions
             };
         }
 
@@ -904,7 +935,10 @@ namespace CpPrinting.Api.Controllers
                 Metric("QC checked", snapshot.CpiReports.Sum(c => c.CheckedQty), "Pieces inspected"),
                 Metric("Dispatched", snapshot.AdviceNotes.Sum(a => a.DispatchQty), "Gatepass output"),
                 Metric("Worker output", snapshot.DailyOutputs.Where(d => !d.IsJobCompleted).Sum(StageOutputForPerformance), "Highest stage qty per row"),
-                Metric("Active users", snapshot.ActivityLogs.Select(a => a.UserName).Where(v => !string.IsNullOrWhiteSpace(v)).Distinct(StringComparer.OrdinalIgnoreCase).Count(), "Users/operators with activity")
+                Metric("Login count", snapshot.UserSessions.Count, "User sessions in period"),
+                Metric("Login hours", Math.Round(snapshot.UserSessions.Sum(SessionLoginSeconds) / 3600.0, 2), "Total logged-in hours"),
+                Metric("Idle hours", Math.Round(snapshot.UserSessions.Sum(s => s.TotalIdleSeconds) / 3600.0, 2), "Total idle hours"),
+                Metric("Active users", snapshot.UserSessions.Select(a => a.UserName).Where(v => !string.IsNullOrWhiteSpace(v)).Distinct(StringComparer.OrdinalIgnoreCase).Count(), "Users with session activity")
             };
         }
 
@@ -916,6 +950,8 @@ namespace CpPrinting.Api.Controllers
             rows.AddRange(BuildGatepassEmployeeRows(snapshot.AdviceNotes));
             rows.AddRange(BuildWorkerEmployeeRows(snapshot.DailyOutputs));
             rows.AddRange(BuildStoreEmployeeRowsFromLogs(snapshot.ActivityLogs, new List<Dictionary<string, object>>()));
+
+            ApplySessionStatsToEmployeeRows(rows, snapshot.UserSessions);
 
             return rows
                 .Where(r => !string.IsNullOrWhiteSpace(r.EmployeeName))
@@ -932,6 +968,21 @@ namespace CpPrinting.Api.Controllers
                     QualityQty = g.Sum(x => x.QualityQty),
                     DefectQty = g.Sum(x => x.DefectQty),
                     Score = Math.Round(g.Average(x => x.Score), 2),
+                    LoginCount = g.Max(x => x.LoginCount),
+                    SystemLoginTime = g.Select(x => x.SystemLoginTime).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? string.Empty,
+                    IdleTime = g.Select(x => x.IdleTime).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? string.Empty,
+                    UserLogoutCount = g.Max(x => x.UserLogoutCount),
+                    UserLogoutTime = g.Select(x => x.UserLogoutTime).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? string.Empty,
+                    SystemLogoutCount = g.Max(x => x.SystemLogoutCount),
+                    SystemLogoutTime = g.Select(x => x.SystemLogoutTime).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? string.Empty,
+                    TotalLoginSeconds = g.Max(x => x.TotalLoginSeconds),
+                    TotalIdleSeconds = g.Max(x => x.TotalIdleSeconds),
+                    TotalActiveSeconds = g.Max(x => x.TotalActiveSeconds),
+                    TotalLoginTime = g.Select(x => x.TotalLoginTime).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? string.Empty,
+                    TotalIdleTime = g.Select(x => x.TotalIdleTime).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? string.Empty,
+                    TotalActiveTime = g.Select(x => x.TotalActiveTime).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? string.Empty,
+                    AttendanceScore = g.Max(x => x.AttendanceScore),
+                    CurrentStatus = g.Select(x => x.CurrentStatus).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? string.Empty,
                     Basis = string.Join(" | ", g.Select(x => x.Basis).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().Take(3))
                 })
                 .OrderByDescending(r => r.Score)
@@ -1120,6 +1171,187 @@ namespace CpPrinting.Api.Controllers
         private static int StageOutputForPerformance(DailyOutputRecord r)
         {
             return new[] { r.TotalSeating, r.TotalPrinting, r.TotalCuring, r.TotalChecking, r.TotalPacking, r.TotalDispatch }.Max();
+        }
+
+        private async Task<List<UserSession>> LoadUserSessions(string from, string to, string roleFilter)
+        {
+            var toEnd = ToEndOfDay(to);
+            var query = _context.UserSessions.AsNoTracking()
+                .Where(s =>
+                    !string.IsNullOrEmpty(s.LoginAt) && string.Compare(s.LoginAt, toEnd) <= 0 &&
+                    (
+                        string.IsNullOrEmpty(s.LogoutAt) ||
+                        string.Compare(s.LogoutAt, from) >= 0 ||
+                        (!string.IsNullOrEmpty(s.LastSeenAt) && string.Compare(s.LastSeenAt, from) >= 0)
+                    ));
+
+            if (!string.IsNullOrWhiteSpace(roleFilter))
+                query = query.Where(s => s.UserRole == roleFilter);
+
+            return await query.ToListAsync();
+        }
+
+        private async Task ApplySessionStatsToEmployeeRows(List<EmployeePerformanceDto> rows, ReportQueryFilter filter)
+        {
+            var sessions = await LoadUserSessions(filter.DateFrom, filter.DateTo, filter.Role);
+            ApplySessionStatsToEmployeeRows(rows, sessions);
+        }
+
+        private static void ApplySessionStatsToEmployeeRows(List<EmployeePerformanceDto> rows, List<UserSession> sessions)
+        {
+            if (rows.Count == 0) return;
+
+            var grouped = sessions
+                .Where(s => !string.IsNullOrWhiteSpace(s.UserName))
+                .GroupBy(s => NormalizePersonKey(s.UserName))
+                .ToDictionary(g => g.Key, g => BuildSessionStats(g.ToList()));
+
+            foreach (var row in rows)
+            {
+                var key = NormalizePersonKey(row.EmployeeName);
+                if (!grouped.TryGetValue(key, out var stats)) continue;
+
+                row.LoginCount = stats.LoginCount;
+                row.SystemLoginTime = stats.SystemLoginTime;
+                row.IdleTime = stats.IdleTime;
+                row.UserLogoutCount = stats.UserLogoutCount;
+                row.UserLogoutTime = stats.UserLogoutTime;
+                row.SystemLogoutCount = stats.SystemLogoutCount;
+                row.SystemLogoutTime = stats.SystemLogoutTime;
+                row.TotalLoginSeconds = stats.TotalLoginSeconds;
+                row.TotalIdleSeconds = stats.TotalIdleSeconds;
+                row.TotalActiveSeconds = stats.TotalActiveSeconds;
+                row.TotalLoginTime = stats.TotalLoginTime;
+                row.TotalIdleTime = stats.TotalIdleTime;
+                row.TotalActiveTime = stats.TotalActiveTime;
+                row.AttendanceScore = stats.AttendanceScore;
+                row.CurrentStatus = stats.CurrentStatus;
+
+                if (stats.LoginCount > 0)
+                {
+                    // Keep the work score as the main score, but let attendance slightly affect it.
+                    // 85% work output/quality + 15% attendance discipline.
+                    row.Score = Math.Round(Math.Max(0, Math.Min(100, (row.Score * 0.85) + (stats.AttendanceScore * 0.15))), 2);
+                    row.Basis = string.IsNullOrWhiteSpace(row.Basis)
+                        ? "Includes session attendance support"
+                        : row.Basis + " | Session attendance included";
+                }
+            }
+        }
+
+        private static SessionStats BuildSessionStats(List<UserSession> sessions)
+        {
+            var ordered = sessions
+                .Where(s => !string.IsNullOrWhiteSpace(s.LoginAt))
+                .OrderBy(s => s.LoginAt)
+                .ToList();
+
+            if (ordered.Count == 0)
+                return new SessionStats();
+
+            var userLogouts = ordered.Where(s => Same(s.LogoutType, "User")).ToList();
+            var systemLogouts = ordered.Where(s => Same(s.LogoutType, "SystemIdle")).ToList();
+            var activeSessions = ordered.Where(s => s.IsActive).ToList();
+            var latestSession = ordered.OrderByDescending(s => string.IsNullOrWhiteSpace(s.LogoutAt) ? s.LastSeenAt : s.LogoutAt).First();
+
+            var totalLogin = ordered.Sum(SessionLoginSeconds);
+            var totalIdle = ordered.Sum(s => Math.Max(0, s.TotalIdleSeconds));
+            var totalActive = ordered.Sum(SessionActiveSeconds);
+            var attendanceScore = AttendanceScore(totalLogin, totalIdle, systemLogouts.Count);
+
+            return new SessionStats
+            {
+                LoginCount = ordered.Count,
+                SystemLoginTime = $"{ordered.First().LoginAt} / {ordered.Count} login(s)",
+                LastLogin = ordered.Last().LoginAt,
+                LastSeen = LatestValue(ordered.Select(s => s.LastSeenAt)),
+                IdleTime = FormatDuration(latestSession.TotalIdleSeconds),
+                UserLogoutCount = userLogouts.Count,
+                UserLogoutTime = userLogouts.Count == 0 ? string.Empty : $"{LatestValue(userLogouts.Select(s => s.LogoutAt))} / {userLogouts.Count} time(s)",
+                SystemLogoutCount = systemLogouts.Count,
+                SystemLogoutTime = systemLogouts.Count == 0 ? string.Empty : $"{LatestValue(systemLogouts.Select(s => s.LogoutAt))} / {systemLogouts.Count} time(s)",
+                TotalLoginSeconds = totalLogin,
+                TotalIdleSeconds = totalIdle,
+                TotalActiveSeconds = totalActive,
+                TotalLoginTime = FormatDuration(totalLogin),
+                TotalIdleTime = FormatDuration(totalIdle),
+                TotalActiveTime = FormatDuration(totalActive),
+                AttendanceScore = attendanceScore,
+                CurrentStatus = activeSessions.Count > 0 ? "Active" : "Logged out"
+            };
+        }
+
+        private static bool SessionBelongsToUser(UserSession session, User user)
+        {
+            if (!string.IsNullOrWhiteSpace(session.UserId) && session.UserId == user.Id) return true;
+            var sessionName = NormalizePersonKey(session.UserName);
+            return sessionName == NormalizePersonKey(user.Name) || sessionName == NormalizePersonKey(user.Username);
+        }
+
+        private static string NormalizePersonKey(string? value)
+        {
+            var clean = Clean(value).ToLowerInvariant();
+            var bracketIndex = clean.IndexOf(" (", StringComparison.Ordinal);
+            if (bracketIndex > 0) clean = clean[..bracketIndex];
+            return clean.Trim();
+        }
+
+        private static string LatestValue(IEnumerable<string?> values)
+        {
+            return values
+                .Where(v => !string.IsNullOrWhiteSpace(v))
+                .Select(v => v!.Trim())
+                .DefaultIfEmpty(string.Empty)
+                .OrderByDescending(v => v)
+                .First();
+        }
+
+        private static int SessionLoginSeconds(UserSession session)
+        {
+            if (session.TotalLoginSeconds > 0) return session.TotalLoginSeconds;
+            var end = !string.IsNullOrWhiteSpace(session.LogoutAt)
+                ? session.LogoutAt
+                : !string.IsNullOrWhiteSpace(session.LastSeenAt)
+                    ? session.LastSeenAt
+                    : NowStamp();
+            return CalculateSeconds(session.LoginAt, end);
+        }
+
+        private static int SessionActiveSeconds(UserSession session)
+        {
+            if (session.TotalActiveSeconds > 0) return session.TotalActiveSeconds;
+            return Math.Max(0, SessionLoginSeconds(session) - Math.Max(0, session.TotalIdleSeconds));
+        }
+
+        private static double AttendanceScore(int totalLoginSeconds, int totalIdleSeconds, int systemLogoutCount)
+        {
+            if (totalLoginSeconds <= 0) return 0;
+            var activePercent = Percent(Math.Max(0, totalLoginSeconds - totalIdleSeconds), totalLoginSeconds);
+            var idlePenalty = Math.Min(25, systemLogoutCount * 5);
+            return Math.Round(Math.Max(0, Math.Min(100, activePercent - idlePenalty)), 2);
+        }
+
+        private static DateTime? ParseStamp(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return null;
+            return DateTime.TryParse(value, out var parsed) ? parsed : null;
+        }
+
+        private static int CalculateSeconds(string? from, string? to)
+        {
+            var start = ParseStamp(from);
+            var end = ParseStamp(to);
+            if (start == null || end == null || end < start) return 0;
+            return (int)Math.Round((end.Value - start.Value).TotalSeconds);
+        }
+
+        private static string FormatDuration(int totalSeconds)
+        {
+            var safeSeconds = Math.Max(0, totalSeconds);
+            var ts = TimeSpan.FromSeconds(safeSeconds);
+            if (ts.TotalHours >= 1) return $"{(int)ts.TotalHours}h {ts.Minutes}m";
+            if (ts.TotalMinutes >= 1) return $"{ts.Minutes}m {ts.Seconds}s";
+            return $"{ts.Seconds}s";
         }
 
         private static void ApplyReportEmployeeFilters(SectionReportDto report, ReportQueryFilter filter)
@@ -1398,8 +1630,8 @@ namespace CpPrinting.Api.Controllers
                 "QC" => new List<string> { "QC", "Admin" },
                 "Gatepass" => new List<string> { "Gatepass", "Admin" },
                 "Worker" => new List<string> { "Worker", "Admin" },
-                "Users" => new List<string> { "Admin", "Developer", "QC", "Gatepass", "Audit", "Stores", "Worker" },
-                _ => new List<string> { "Admin", "Developer", "QC", "Gatepass", "Audit", "Stores", "Worker" }
+                "Users" => new List<string> { "SuperAdmin", "Admin", "Developer", "QC", "Gatepass", "Audit", "Stores", "Worker" },
+                _ => new List<string> { "SuperAdmin", "Admin", "Developer", "QC", "Gatepass", "Audit", "Stores", "Worker" }
             };
         }
 
@@ -1522,6 +1754,21 @@ namespace CpPrinting.Api.Controllers
         public double QualityQty { get; set; }
         public double DefectQty { get; set; }
         public double Score { get; set; }
+        public int LoginCount { get; set; }
+        public string SystemLoginTime { get; set; } = string.Empty;
+        public string IdleTime { get; set; } = string.Empty;
+        public int UserLogoutCount { get; set; }
+        public string UserLogoutTime { get; set; } = string.Empty;
+        public int SystemLogoutCount { get; set; }
+        public string SystemLogoutTime { get; set; } = string.Empty;
+        public int TotalLoginSeconds { get; set; }
+        public int TotalIdleSeconds { get; set; }
+        public int TotalActiveSeconds { get; set; }
+        public string TotalLoginTime { get; set; } = string.Empty;
+        public string TotalIdleTime { get; set; } = string.Empty;
+        public string TotalActiveTime { get; set; } = string.Empty;
+        public double AttendanceScore { get; set; }
+        public string CurrentStatus { get; set; } = string.Empty;
         public string Basis { get; set; } = string.Empty;
     }
 
@@ -1534,6 +1781,20 @@ namespace CpPrinting.Api.Controllers
         public int ActivityCount { get; set; }
         public string LastLogin { get; set; } = string.Empty;
         public string LastActivity { get; set; } = string.Empty;
+        public int LoginCount { get; set; }
+        public string SystemLoginTime { get; set; } = string.Empty;
+        public string IdleTime { get; set; } = string.Empty;
+        public int UserLogoutCount { get; set; }
+        public string UserLogoutTime { get; set; } = string.Empty;
+        public int SystemLogoutCount { get; set; }
+        public string SystemLogoutTime { get; set; } = string.Empty;
+        public int TotalLoginSeconds { get; set; }
+        public int TotalIdleSeconds { get; set; }
+        public int TotalActiveSeconds { get; set; }
+        public string TotalLoginTime { get; set; } = string.Empty;
+        public string TotalIdleTime { get; set; } = string.Empty;
+        public string TotalActiveTime { get; set; } = string.Empty;
+        public string CurrentStatus { get; set; } = string.Empty;
     }
 
     public class ReportFilterOptionsDto
@@ -1591,6 +1852,28 @@ namespace CpPrinting.Api.Controllers
         }
     }
 
+
+    internal class SessionStats
+    {
+        public int LoginCount { get; set; }
+        public string SystemLoginTime { get; set; } = string.Empty;
+        public string LastLogin { get; set; } = string.Empty;
+        public string LastSeen { get; set; } = string.Empty;
+        public string IdleTime { get; set; } = string.Empty;
+        public int UserLogoutCount { get; set; }
+        public string UserLogoutTime { get; set; } = string.Empty;
+        public int SystemLogoutCount { get; set; }
+        public string SystemLogoutTime { get; set; } = string.Empty;
+        public int TotalLoginSeconds { get; set; }
+        public int TotalIdleSeconds { get; set; }
+        public int TotalActiveSeconds { get; set; }
+        public string TotalLoginTime { get; set; } = string.Empty;
+        public string TotalIdleTime { get; set; } = string.Empty;
+        public string TotalActiveTime { get; set; } = string.Empty;
+        public double AttendanceScore { get; set; }
+        public string CurrentStatus { get; set; } = string.Empty;
+    }
+
     internal class ReportSnapshot
     {
         public List<SampleStyle> SampleStyles { get; set; } = new();
@@ -1600,5 +1883,6 @@ namespace CpPrinting.Api.Controllers
         public List<AdviceNoteRecord> AdviceNotes { get; set; } = new();
         public List<DailyOutputRecord> DailyOutputs { get; set; } = new();
         public List<ActivityLog> ActivityLogs { get; set; } = new();
+        public List<UserSession> UserSessions { get; set; } = new();
     }
 }

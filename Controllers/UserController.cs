@@ -10,7 +10,7 @@ namespace CpPrinting.Api.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = "Admin,SuperAdmin")]
     public class UsersController : ControllerBase
     {
         private readonly AppDbContext _context;
@@ -18,7 +18,7 @@ namespace CpPrinting.Api.Controllers
 
         private static readonly string[] AllowedRoles =
         {
-            "Admin", "Developer", "QC", "Gatepass", "Audit", "Stores", "Worker"
+            "Admin", "Developer", "QC", "Gatepass", "Audit", "Stores", "Worker","SuperAdmin"
         };
 
         public UsersController(AppDbContext context, ActivityLogger logger)
