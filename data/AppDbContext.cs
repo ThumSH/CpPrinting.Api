@@ -21,6 +21,8 @@ namespace CpPrinting.Api.Data
         public DbSet<CPIReport> CpiReports { get; set; }
         public DbSet<AuditRecord> AuditRecords { get; set; }
         public DbSet<DeliveryTrackerReport> DeliveryTrackers { get; set; }
+        public DbSet<UserSession> UserSessions { get; set; }
+        public DbSet<UserSessionEvent> UserSessionEvents { get; set; }
         public DbSet<AdviceNoteRecord> AdviceNotes { get; set; }
         public DbSet<DailyOutputRecord> DailyOutputRecords { get; set; }
         public DbSet<DowntimeRecord> DowntimeRecords { get; set; }
@@ -41,6 +43,27 @@ namespace CpPrinting.Api.Data
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
+
+              modelBuilder.Entity<UserSession>()
+                .HasIndex(session => session.UserId);
+
+            modelBuilder.Entity<UserSession>()
+                .HasIndex(session => session.UserRole);
+
+            modelBuilder.Entity<UserSession>()
+                .HasIndex(session => session.LoginAt);
+
+            modelBuilder.Entity<UserSession>()
+                .HasIndex(session => session.IsActive);
+
+            modelBuilder.Entity<UserSessionEvent>()
+                .HasIndex(evt => evt.SessionId);
+
+            modelBuilder.Entity<UserSessionEvent>()
+                .HasIndex(evt => evt.UserId);
+
+            modelBuilder.Entity<UserSessionEvent>()
+                .HasIndex(evt => evt.Timestamp);
 
             // INVENTORY: StoreIn -> Cuts -> Bundles
             modelBuilder.Entity<StoreInRecord>()
