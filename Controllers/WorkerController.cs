@@ -248,6 +248,88 @@ namespace CpPrinting.Api.Controllers
             return Ok(result);
         }
 
+
+        // ── Store-In cut report for Worker page ───────────────────────────────
+        // Read-only endpoint used to show the selected Store-In cut/bundle report
+        // under the Worker time-slot allocation table. This does not create,
+        // update, or delete any Store-In / Production / Daily Output data.
+        [HttpGet("store-in-cut-report")]
+        public async Task<ActionResult> GetStoreInCutReport(
+            [FromQuery] string? storeInRecordId,
+            [FromQuery] string? cutNo)
+        {
+            if (string.IsNullOrWhiteSpace(storeInRecordId))
+                return BadRequest("Store-In record ID is required.");
+
+            if (string.IsNullOrWhiteSpace(cutNo))
+                return BadRequest("Cut No is required.");
+
+            var requestedStoreInId = storeInRecordId.Trim();
+            var requestedCutNo = cutNo.Trim();
+
+            var record = await _context.StoreInRecords
+                .AsNoTracking()
+                .Include(r => r.Cuts)
+                    .ThenInclude(c => c.Bundles)
+                .FirstOrDefaultAsync(r => r.Id == requestedStoreInId);
+
+            if (record == null)
+                return NotFound("Store-In record was not found.");
+
+            var cut = record.Cuts
+                .FirstOrDefault(c =>
+                    string.Equals(
+                        (c.CutNo ?? string.Empty).Trim(),
+                        requestedCutNo,
+                        StringComparison.OrdinalIgnoreCase));
+
+            if (cut == null)
+                return NotFound("The selected cut was not found in the linked Store-In record.");
+
+            var bundles = cut.Bundles?.ToList() ?? new();
+            var orderedBundles = bundles.Any(b => b.BundleOrder > 0)
+                ? bundles
+                    .OrderBy(b => b.BundleOrder > 0 ? b.BundleOrder : int.MaxValue)
+                    .ThenBy(b => b.Id)
+                    .ToList()
+                : bundles;
+
+            return Ok(new
+            {
+                Id = record.Id,
+                StoreInRecordId = record.Id,
+                record.SubmissionId,
+                record.RevisionNo,
+                StyleNo = record.StyleNo ?? string.Empty,
+                CustomerName = record.CustomerName ?? string.Empty,
+                BodyColour = record.BodyColour ?? string.Empty,
+                PrintColour = record.PrintColour ?? string.Empty,
+                Component = record.Components ?? string.Empty,
+                Season = record.Season ?? string.Empty,
+                InAdNo = record.InAdNo ?? string.Empty,
+                ScheduleNo = record.ScheduleNo ?? string.Empty,
+                JobNo = record.JobNo ?? string.Empty,
+                CutInDate = record.CutInDate ?? string.Empty,
+                record.InQty,
+                record.TotalCutQty,
+                Cut = new
+                {
+                    Id = cut.Id,
+                    CutNo = cut.CutNo ?? string.Empty,
+                    cut.CutQty,
+                    Bundles = orderedBundles.Select((b, index) => new
+                    {
+                        Id = b.Id,
+                        BundleNo = string.IsNullOrWhiteSpace(b.BundleNo) ? $"b-{index + 1}" : b.BundleNo,
+                        b.BundleQty,
+                        Size = b.Size ?? string.Empty,
+                        NumberRange = b.NumberRange ?? string.Empty,
+                        BundleOrder = b.BundleOrder > 0 ? b.BundleOrder : index + 1
+                    }).ToList()
+                }
+            });
+        }
+
         [HttpGet("daily-output")]
         public async Task<ActionResult> GetDailyOutputRecords(
             [FromQuery] bool paginated = false,
