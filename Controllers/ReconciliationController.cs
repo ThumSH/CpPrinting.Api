@@ -125,6 +125,9 @@ namespace CpPrinting.Api.Controllers
             var poNo = request.PoNo?.Trim() ?? string.Empty;
             var colour = request.Colour?.Trim() ?? string.Empty;
 
+            var documentValidationError = ValidateDocumentReferenceFormat(invoiceNo, poNo);
+            if (!string.IsNullOrWhiteSpace(documentValidationError)) return BadRequest(documentValidationError);
+
             var receivedQty = request.Totals?.ReceivedQty ?? 0;
             var sentTotal = request.Totals?.SentTotal ?? 0;
             var pdTotal = request.Totals?.PdTotal ?? 0;
@@ -134,18 +137,20 @@ namespace CpPrinting.Api.Controllers
             var goodQtyTotal = request.Totals?.GoodQtyTotal ?? 0;
             var rowsJson = JsonSerializer.Serialize(request.Rows, JsonOptions);
 
-            // Same report identity = same customer/style/component/schedule/colour.
-            // Job Nos, Invoice No, PO No, totals and rows are treated as report content that can be updated.
-            var existingScopeReports = await _context.ReconciliationReports
+            // Same report identity = same customer/style/component/schedule/colour/invoice number(s).
+            // Different invoice numbers are valid separate saved reports.
+            // Invoice quantities are not part of identity, so correcting invoice qty updates the same invoice report.
+            // Job Nos, PO No, totals and rows are treated as report content that can be updated.
+            var existingReports = await _context.ReconciliationReports
                 .AsNoTracking()
                 .ToListAsync();
 
-            var matchingScope = existingScopeReports
-                .Where(r => SameReportScope(r, customerName, styleNo, component, scheduleNo, colour))
+            var matchingIdentity = existingReports
+                .Where(r => SameReportIdentity(r, customerName, styleNo, component, scheduleNo, colour, invoiceNo))
                 .OrderBy(r => r.CreatedAt)
                 .ToList();
 
-            var exactDuplicate = matchingScope.FirstOrDefault(r => SameReportContent(
+            var exactDuplicate = matchingIdentity.FirstOrDefault(r => SameReportContent(
                 r,
                 jobNos,
                 invoiceNo,
@@ -173,17 +178,17 @@ namespace CpPrinting.Api.Controllers
                 });
             }
 
-            var existingSameScope = matchingScope.FirstOrDefault();
-            if (existingSameScope != null)
+            var existingSameIdentity = matchingIdentity.FirstOrDefault();
+            if (existingSameIdentity != null)
             {
                 return Conflict(new ReconciliationSaveConflictDto
                 {
                     Reason = "SAME_SCOPE_EXISTS",
-                    Message = "A reconciliation report already exists for this customer, style, component, schedule and colour. Update the existing report instead of creating a duplicate.",
-                    ExistingReportId = existingSameScope.Id,
-                    ExistingReportDate = existingSameScope.ReportDate,
-                    ExistingCreatedAt = existingSameScope.CreatedAt,
-                    ExistingUpdatedAt = existingSameScope.UpdatedAt,
+                    Message = "A reconciliation report already exists for this customer, style, component, schedule, colour and invoice number(s). Update the existing report instead of creating a duplicate.",
+                    ExistingReportId = existingSameIdentity.Id,
+                    ExistingReportDate = existingSameIdentity.ReportDate,
+                    ExistingCreatedAt = existingSameIdentity.CreatedAt,
+                    ExistingUpdatedAt = existingSameIdentity.UpdatedAt,
                     IsExactDuplicate = false
                 });
             }
@@ -239,9 +244,12 @@ namespace CpPrinting.Api.Controllers
             var poNo = request.PoNo?.Trim() ?? string.Empty;
             var colour = request.Colour?.Trim() ?? string.Empty;
 
-            if (!SameReportScope(existing, customerName, styleNo, component, scheduleNo, colour))
+            var documentValidationError = ValidateDocumentReferenceFormat(invoiceNo, poNo);
+            if (!string.IsNullOrWhiteSpace(documentValidationError)) return BadRequest(documentValidationError);
+
+            if (!SameReportIdentity(existing, customerName, styleNo, component, scheduleNo, colour, invoiceNo))
             {
-                return BadRequest("The selected saved report does not match the current customer, style, component, schedule and colour scope.");
+                return BadRequest("The selected saved report does not match the current customer, style, component, schedule, colour and invoice number identity.");
             }
 
             var receivedQty = request.Totals?.ReceivedQty ?? 0;
@@ -259,7 +267,7 @@ namespace CpPrinting.Api.Controllers
 
             var duplicateInAnotherRecord = allReports.FirstOrDefault(r =>
                 r.Id != existing.Id &&
-                SameReportScope(r, customerName, styleNo, component, scheduleNo, colour) &&
+                SameReportIdentity(r, customerName, styleNo, component, scheduleNo, colour, invoiceNo) &&
                 SameReportContent(
                     r,
                     jobNos,
@@ -366,6 +374,77 @@ namespace CpPrinting.Api.Controllers
             return NoContent();
         }
 
+        private static IEnumerable<string> SplitDocumentReferenceParts(string value)
+        {
+            return Regex.Split((value ?? string.Empty).Trim(), @"\s+/\s+")
+                .Select(part => part.Trim())
+                .Where(part => !string.IsNullOrWhiteSpace(part));
+        }
+
+        private static string? ValidateStructuredInvoiceNo(string invoiceNo)
+        {
+            if (string.IsNullOrWhiteSpace(invoiceNo)) return null;
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var parts = SplitDocumentReferenceParts(invoiceNo).ToList();
+
+            if (parts.Count == 0) return null;
+
+            foreach (var part in parts)
+            {
+                var match = Regex.Match(part, @"^CPPS\s+(\d+)\s*-\s*([1-9]\d*)\s*PCS$", RegexOptions.IgnoreCase);
+                if (!match.Success)
+                {
+                    return "Invoice No format is invalid. Use structured format like 'CPPS 4169 - 1100 PCS'. For multiple invoices, separate them with ' / '.";
+                }
+
+                var normalizedInvoice = $"CPPS {match.Groups[1].Value}";
+                if (!seen.Add(normalizedInvoice))
+                {
+                    return $"Invoice No '{normalizedInvoice}' is repeated. Add each invoice number only once.";
+                }
+            }
+
+            return null;
+        }
+
+        private static string? ValidateStructuredPoNo(string poNo)
+        {
+            if (string.IsNullOrWhiteSpace(poNo)) return null;
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var parts = SplitDocumentReferenceParts(poNo).ToList();
+
+            if (parts.Count == 0) return null;
+
+            foreach (var part in parts)
+            {
+                var match = Regex.Match(part, @"^([A-Z0-9][A-Z0-9.\-\s]*?)\s*-\s*QTY\s+([1-9]\d*)$", RegexOptions.IgnoreCase);
+                if (!match.Success)
+                {
+                    return "PO No format is invalid. Use structured format like '192083 - QTY 4629'. For multiple PO numbers, separate them with ' / '.";
+                }
+
+                var normalizedPo = Regex.Replace(match.Groups[1].Value.Trim(), @"\s+", " ").ToUpperInvariant();
+                if (Regex.IsMatch(normalizedPo, @"\b(PO\s*NO|QTY|PCS)\b", RegexOptions.IgnoreCase))
+                {
+                    return "PO No should contain only the PO number. Do not type 'PO NO', 'QTY' or 'PCS' in the PO No field.";
+                }
+
+                if (!seen.Add(normalizedPo))
+                {
+                    return $"PO No '{normalizedPo}' is repeated. Add each PO number only once.";
+                }
+            }
+
+            return null;
+        }
+
+        private static string? ValidateDocumentReferenceFormat(string invoiceNo, string poNo)
+        {
+            return ValidateStructuredInvoiceNo(invoiceNo) ?? ValidateStructuredPoNo(poNo);
+        }
+
         private static string NormalizeCompare(string? value)
         {
             var trimmed = (value ?? string.Empty).Trim();
@@ -373,19 +452,37 @@ namespace CpPrinting.Api.Controllers
             return Regex.Replace(trimmed, @"\s+", " ").ToUpperInvariant();
         }
 
-        private static bool SameReportScope(
+        private static string NormalizeInvoiceIdentity(string? value)
+        {
+            var raw = value ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
+
+            var invoiceNumbers = Regex.Matches(raw, @"CPPS\s*-?\s*(\d+)", RegexOptions.IgnoreCase)
+                .Select(match => $"CPPS {match.Groups[1].Value}")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            return invoiceNumbers.Count > 0
+                ? string.Join(" / ", invoiceNumbers)
+                : NormalizeCompare(raw);
+        }
+
+        private static bool SameReportIdentity(
             ReconciliationReportRecord record,
             string customerName,
             string styleNo,
             string component,
             string scheduleNo,
-            string colour)
+            string colour,
+            string invoiceNo)
         {
             return NormalizeCompare(record.CustomerName) == NormalizeCompare(customerName) &&
                    NormalizeCompare(record.StyleNo) == NormalizeCompare(styleNo) &&
                    NormalizeCompare(record.Component) == NormalizeCompare(component) &&
                    NormalizeCompare(record.ScheduleNo) == NormalizeCompare(scheduleNo) &&
-                   NormalizeCompare(record.Colour) == NormalizeCompare(colour);
+                   NormalizeCompare(record.Colour) == NormalizeCompare(colour) &&
+                   NormalizeInvoiceIdentity(record.InvoiceNo) == NormalizeInvoiceIdentity(invoiceNo);
         }
 
         private static bool SameReportContent(
