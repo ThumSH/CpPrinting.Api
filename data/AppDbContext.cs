@@ -25,6 +25,7 @@ namespace CpPrinting.Api.Data
         public DbSet<UserSessionEvent> UserSessionEvents { get; set; }
         public DbSet<AdviceNoteRecord> AdviceNotes { get; set; }
         public DbSet<DailyOutputRecord> DailyOutputRecords { get; set; }
+        public DbSet<WorkerCutReport> WorkerCutReports { get; set; }
         public DbSet<DowntimeRecord> DowntimeRecords { get; set; }
 
         public DbSet<ActivityLog> ActivityLogs { get; set; }
@@ -117,6 +118,25 @@ namespace CpPrinting.Api.Data
                     v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
                     v => JsonSerializer.Deserialize<List<TimeSlotEntry>>(v, (JsonSerializerOptions?)null)!
                 );
+
+
+
+            // WORKER CUT REPORTS: saved bundle status report per Store-In cut.
+            modelBuilder.Entity<WorkerCutReport>()
+                .HasIndex(report => new { report.StoreInRecordId, report.CutNo })
+                .IsUnique();
+
+            modelBuilder.Entity<WorkerCutReport>()
+                .HasIndex(report => report.ReportDate);
+
+            modelBuilder.Entity<WorkerCutReport>()
+                .HasIndex(report => report.StyleNo);
+
+            modelBuilder.Entity<WorkerCutReport>()
+                .HasIndex(report => report.CustomerName);
+
+            modelBuilder.Entity<WorkerCutReport>()
+                .HasIndex(report => report.CutNo);
 
             // DOWNTIME: Entries JSON
             modelBuilder.Entity<DowntimeRecord>()

@@ -330,6 +330,130 @@ namespace CpPrinting.Api.Controllers
             });
         }
 
+
+        // ── Worker production reporting ────────────────────────────────────────
+        // Read-only reporting endpoint. It summarizes DailyOutputRecords recorded
+        // within the requested date range. It does not change worker allocation,
+        // completion, validation, or production data.
+        [HttpGet("reports/production")]
+        public async Task<ActionResult> GetProductionReport(
+            [FromQuery] string? dateFrom,
+            [FromQuery] string? dateTo)
+        {
+            if (string.IsNullOrWhiteSpace(dateFrom) || string.IsNullOrWhiteSpace(dateTo))
+                return BadRequest("dateFrom and dateTo are required (yyyy-MM-dd).");
+
+            var from = dateFrom.Trim();
+            var to = dateTo.Trim();
+
+            if (string.Compare(from, to, StringComparison.Ordinal) > 0)
+                return BadRequest("dateFrom cannot be after dateTo.");
+
+            // Completion-marker rows contain no production output and must not
+            // participate in production reporting. Historical output rows remain
+            // reportable even when the production job was completed later.
+            var sourceRows = await _context.DailyOutputRecords
+                .AsNoTracking()
+                .Where(r =>
+                    !r.IsJobCompleted &&
+                    r.Date != null &&
+                    string.Compare(r.Date, from) >= 0 &&
+                    string.Compare(r.Date, to) <= 0)
+                .Select(r => new
+                {
+                    r.ProductionRecordId,
+                    r.Date,
+                    r.StyleNo,
+                    r.CustomerName,
+                    r.CutNo,
+                    r.Component,
+                    r.OrderQty,
+                    r.TotalSeating,
+                    r.TotalPrinting,
+                    r.TotalCuring,
+                    r.TotalChecking,
+                    r.TotalPacking,
+                    r.TotalDispatch
+                })
+                .ToListAsync();
+
+            var allocationRows = sourceRows
+                .Where(r => !string.IsNullOrWhiteSpace(r.ProductionRecordId))
+                .GroupBy(r => new
+                {
+                    ProductionRecordId = r.ProductionRecordId ?? string.Empty,
+                    StyleNo = r.StyleNo ?? string.Empty,
+                    CustomerName = r.CustomerName ?? string.Empty,
+                    CutNo = r.CutNo ?? string.Empty,
+                    Component = r.Component ?? string.Empty
+                })
+                .Select(g => new
+                {
+                    g.Key.ProductionRecordId,
+                    g.Key.StyleNo,
+                    g.Key.CustomerName,
+                    g.Key.CutNo,
+                    g.Key.Component,
+                    IssueQty = g.Max(x => x.OrderQty),
+                    Seating = g.Sum(x => x.TotalSeating),
+                    Printing = g.Sum(x => x.TotalPrinting),
+                    Curing = g.Sum(x => x.TotalCuring),
+                    Checking = g.Sum(x => x.TotalChecking),
+                    Packing = g.Sum(x => x.TotalPacking),
+                    Dispatch = g.Sum(x => x.TotalDispatch),
+                    FirstEntryDate = g.Min(x => x.Date),
+                    LastEntryDate = g.Max(x => x.Date),
+                    EntryCount = g.Count()
+                })
+                .OrderBy(x => x.StyleNo)
+                .ThenBy(x => x.CustomerName)
+                .ThenBy(x => x.CutNo)
+                .ThenBy(x => x.Component)
+                .ToList();
+
+            var styleSummaries = allocationRows
+                .GroupBy(r => new { r.StyleNo, r.CustomerName })
+                .Select(g => new
+                {
+                    g.Key.StyleNo,
+                    g.Key.CustomerName,
+                    ProductionAllocations = g.Count(),
+                    LinkedIssueQty = g.Sum(x => x.IssueQty),
+                    Seating = g.Sum(x => x.Seating),
+                    Printing = g.Sum(x => x.Printing),
+                    Curing = g.Sum(x => x.Curing),
+                    Checking = g.Sum(x => x.Checking),
+                    Packing = g.Sum(x => x.Packing),
+                    Dispatch = g.Sum(x => x.Dispatch)
+                })
+                .OrderBy(x => x.StyleNo)
+                .ThenBy(x => x.CustomerName)
+                .ToList();
+
+            var totals = new
+            {
+                Styles = styleSummaries.Count,
+                ProductionAllocations = allocationRows.Count,
+                LinkedIssueQty = allocationRows.Sum(x => x.IssueQty),
+                Seating = allocationRows.Sum(x => x.Seating),
+                Printing = allocationRows.Sum(x => x.Printing),
+                Curing = allocationRows.Sum(x => x.Curing),
+                Checking = allocationRows.Sum(x => x.Checking),
+                Packing = allocationRows.Sum(x => x.Packing),
+                Dispatch = allocationRows.Sum(x => x.Dispatch)
+            };
+
+            return Ok(new
+            {
+                DateFrom = from,
+                DateTo = to,
+                GeneratedAtUtc = DateTime.UtcNow.ToString("O"),
+                Totals = totals,
+                StyleSummaries = styleSummaries,
+                AllocationRows = allocationRows
+            });
+        }
+
         [HttpGet("daily-output")]
         public async Task<ActionResult> GetDailyOutputRecords(
             [FromQuery] bool paginated = false,
