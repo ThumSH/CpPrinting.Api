@@ -57,6 +57,18 @@ namespace CpPrinting.Api.Controllers
             return GetDashboardToday();
         }
 
+
+        private static decimal ParseDashboardMoney(string? value)
+        {
+            return decimal.TryParse(
+                value?.Trim(),
+                NumberStyles.Number,
+                CultureInfo.InvariantCulture,
+                out var parsed)
+                ? parsed
+                : 0m;
+        }
+
         [HttpGet]
         public async Task<ActionResult> GetDashboardData([FromQuery] string? workerDate = null)
         {
@@ -227,6 +239,128 @@ namespace CpPrinting.Api.Controllers
                     dispatches = recentDispatches,
                     audits     = recentAudits
                 }
+            });
+        }
+
+
+        [HttpGet("accounts")]
+        [Authorize(Roles = "Accounts,Admin")]
+        public async Task<ActionResult> GetAccountsDashboard()
+        {
+            var today = GetDashboardToday();
+            var monthPrefix = today.Length >= 7 ? today[..7] : today;
+
+            var totalInvoices = await _context.TaxInvoices
+                .AsNoTracking()
+                .CountAsync();
+
+            var invoicesToday = await _context.TaxInvoices
+                .AsNoTracking()
+                .CountAsync(i => i.InvoiceDate == today);
+
+            var invoicesThisMonth = await _context.TaxInvoices
+                .AsNoTracking()
+                .CountAsync(i => i.InvoiceDate.StartsWith(monthPrefix));
+
+            // Money fields are stored as strings in the current invoice model.
+            // Read only the needed values and parse them safely in memory.
+            var allInvoiceValues = await _context.TaxInvoices
+                .AsNoTracking()
+                .Select(i => i.TotalAmountIncludingVat)
+                .ToListAsync();
+
+            var monthInvoiceValues = await _context.TaxInvoices
+                .AsNoTracking()
+                .Where(i => i.InvoiceDate.StartsWith(monthPrefix))
+                .Select(i => new
+                {
+                    i.TotalAmountIncludingVat,
+                    i.VatAmount
+                })
+                .ToListAsync();
+
+            var totalInvoiceValue = allInvoiceValues
+                .Sum(ParseDashboardMoney);
+
+            var monthInvoiceValue = monthInvoiceValues
+                .Sum(i => ParseDashboardMoney(i.TotalAmountIncludingVat));
+
+            var monthVatAmount = monthInvoiceValues
+                .Sum(i => ParseDashboardMoney(i.VatAmount));
+
+            var totalCustomers = await _context.Customers
+                .AsNoTracking()
+                .CountAsync();
+
+            var totalReports = await _context.ReconciliationReports
+                .AsNoTracking()
+                .CountAsync();
+
+            var reportsThisMonth = await _context.ReconciliationReports
+                .AsNoTracking()
+                .CountAsync(r => r.ReportDate.StartsWith(monthPrefix));
+
+            var recentInvoices = await _context.TaxInvoices
+                .AsNoTracking()
+                .OrderByDescending(i => i.InvoiceDate)
+                .ThenByDescending(i => i.CreatedAt)
+                .Take(8)
+                .Select(i => new
+                {
+                    i.Id,
+                    i.InvoiceNumber,
+                    i.InvoiceDate,
+                    i.PurchaserName,
+                    i.TotalAmountIncludingVat,
+                    i.CreatedBy
+                })
+                .ToListAsync();
+
+            var recentCustomers = await _context.Customers
+                .AsNoTracking()
+                .OrderByDescending(c => c.CreatedAt)
+                .Take(6)
+                .Select(c => new
+                {
+                    c.Id,
+                    c.CustomerName,
+                    c.CustomerCode,
+                    c.TinNumber,
+                    c.CreatedAt
+                })
+                .ToListAsync();
+
+            var recentReports = await _context.ReconciliationReports
+                .AsNoTracking()
+                .OrderByDescending(r => r.ReportDate)
+                .ThenByDescending(r => r.UpdatedAt)
+                .Take(6)
+                .Select(r => new
+                {
+                    r.Id,
+                    r.CustomerName,
+                    r.StyleNo,
+                    r.Component,
+                    r.InvoiceNo,
+                    r.ReportDate,
+                    r.UpdatedAt
+                })
+                .ToListAsync();
+
+            return Ok(new
+            {
+                totalInvoices,
+                invoicesToday,
+                invoicesThisMonth,
+                totalInvoiceValue,
+                monthInvoiceValue,
+                monthVatAmount,
+                totalCustomers,
+                totalReports,
+                reportsThisMonth,
+                recentInvoices,
+                recentCustomers,
+                recentReports
             });
         }
 

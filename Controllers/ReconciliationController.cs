@@ -8,7 +8,7 @@ using CpPrinting.Api.Models;
 
 namespace CpPrinting.Api.Controllers
 {
-    [Authorize(Roles = "Stores,Gatepass,Admin,Developer,QC")]
+    [Authorize(Roles = "Stores,Gatepass,Admin,Developer,QC,Accounts")]
     [Route("api/[controller]")]
     [ApiController]
     public class ReconciliationController : ControllerBase

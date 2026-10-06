@@ -11,7 +11,7 @@ namespace CpPrinting.Api.Controllers
 {
     [ApiController]
     [Route("api/customers")]
-    [Authorize(Roles = "Admin,SuperAdmin")]
+    [Authorize(Roles = "Admin,SuperAdmin,Accounts")]
     public class CustomersController : ControllerBase
     {
         private readonly AppDbContext _context;

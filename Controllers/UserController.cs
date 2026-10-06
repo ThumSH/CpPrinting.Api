@@ -18,7 +18,7 @@ namespace CpPrinting.Api.Controllers
 
         private static readonly string[] AllowedRoles =
         {
-            "Admin", "Developer", "QC", "Gatepass", "Audit", "Stores", "Worker","SuperAdmin"
+            "Admin", "Developer", "QC", "Gatepass", "Audit", "Stores","Accounts", "Worker","SuperAdmin"
         };
 
         public UsersController(AppDbContext context, ActivityLogger logger)

@@ -11,7 +11,7 @@ namespace CpPrinting.Api.Controllers
 {
     [ApiController]
     [Route("api/tax-invoices")]
-    [Authorize(Roles = "Admin,SuperAdmin")]
+    [Authorize(Roles = "Admin,SuperAdmin,Accounts")]
     public class TaxInvoicesController : ControllerBase
     {
         private const string SecuritySettingId = "invoice-security";
