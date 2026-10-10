@@ -56,6 +56,59 @@ namespace CpPrinting.Api.Controllers
             return Ok(new { url = $"{baseUrl}/uploads/artworks/{fileName}" });
         }
 
+
+        private static string NormalizeJobText(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+            return string.Join(
+                " ",
+                value.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            ).ToLowerInvariant();
+        }
+
+        private static string NormalizeColourList(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+
+            return string.Join(
+                "|",
+                value.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(NormalizeJobText)
+                    .Where(v => !string.IsNullOrWhiteSpace(v))
+                    .OrderBy(v => v)
+            );
+        }
+
+        private static bool IsExactJobDuplicate(DevelopmentJob existing, DevelopmentJob incoming)
+        {
+            return
+                NormalizeJobText(existing.Customer) == NormalizeJobText(incoming.Customer) &&
+                NormalizeJobText(existing.StyleNo) == NormalizeJobText(incoming.StyleNo) &&
+                NormalizeJobText(existing.Season) == NormalizeJobText(incoming.Season) &&
+                NormalizeJobText(existing.PrintingTechnique) == NormalizeJobText(incoming.PrintingTechnique) &&
+                NormalizeJobText(existing.WashingStandard) == NormalizeJobText(incoming.WashingStandard) &&
+                NormalizeColourList(existing.BodyColour) == NormalizeColourList(incoming.BodyColour) &&
+                NormalizeJobText(existing.PrintColour) == NormalizeJobText(incoming.PrintColour) &&
+                NormalizeJobText(existing.PrintColourQty) == NormalizeJobText(incoming.PrintColourQty) &&
+                NormalizeJobText(existing.SampleOrderedDate) == NormalizeJobText(incoming.SampleOrderedDate) &&
+                NormalizeJobText(existing.SampleDeliveryDate) == NormalizeJobText(incoming.SampleDeliveryDate) &&
+                NormalizeJobText(existing.Component) == NormalizeJobText(incoming.Component) &&
+                NormalizeJobText(existing.ArtworkFileName) == NormalizeJobText(incoming.ArtworkFileName) &&
+                NormalizeJobText(existing.ArtworkPreviewUrl) == NormalizeJobText(incoming.ArtworkPreviewUrl);
+        }
+
+        private async Task<DevelopmentJob?> FindExactDuplicateJob(
+            DevelopmentJob incoming,
+            string? excludeId = null)
+        {
+            var candidates = await _context.DevelopmentJobs
+                .AsNoTracking()
+                .Where(j => excludeId == null || j.Id != excludeId)
+                .ToListAsync();
+
+            return candidates.FirstOrDefault(j => IsExactJobDuplicate(j, incoming));
+        }
+
         // ==========================================
         // WORKSPACE JOBS
         // ==========================================
@@ -78,6 +131,14 @@ namespace CpPrinting.Api.Controllers
         [HttpPost("jobs")]
         public async Task<ActionResult<object>> CreateJob(DevelopmentJob job)
         {
+            var duplicate = await FindExactDuplicateJob(job);
+            if (duplicate != null)
+            {
+                return Conflict(
+                    "Duplicate version exists. This exact development job already exists. Change at least one value before creating another job."
+                );
+            }
+
             if (string.IsNullOrWhiteSpace(job.Id))
                 job.Id = Guid.NewGuid().ToString();
 
@@ -120,6 +181,14 @@ namespace CpPrinting.Api.Controllers
         {
             if (id != job.Id)
                 return BadRequest("ID mismatch");
+
+            var duplicate = await FindExactDuplicateJob(job, id);
+            if (duplicate != null)
+            {
+                return Conflict(
+                    "Duplicate version exists. Another development job already contains this exact information. Change at least one value before saving."
+                );
+            }
 
             _context.Entry(job).State = EntityState.Modified;
 
